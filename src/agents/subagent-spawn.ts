@@ -5,6 +5,8 @@ import { callGateway } from "../gateway/call.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
 import { normalizeDeliveryContext } from "../utils/delivery-context.js";
 import { resolveAgentConfig } from "./agent-scope.js";
+import { createAggregationGroup, addSubAgentToGroup } from "./aggregation/index.js";
+import type { SpawnAggregationParams } from "./aggregation/types.js";
 import { AGENT_LANE_SUBAGENT } from "./lanes.js";
 import { resolveSubagentSpawnModelSelection } from "./model-selection.js";
 import { buildSubagentSystemPrompt } from "./subagent-announce.js";
@@ -16,8 +18,6 @@ import {
   resolveInternalSessionKey,
   resolveMainSessionAlias,
 } from "./tools/sessions-helpers.js";
-import { createAggregationGroup, addSubAgentToGroup } from "./aggregation/index.js";
-import type { SpawnAggregationParams } from "./aggregation/types.js";
 
 export type SpawnSubagentParams = {
   task: string;
@@ -29,6 +29,11 @@ export type SpawnSubagentParams = {
   cleanup?: "delete" | "keep";
   expectsCompletionMessage?: boolean;
   aggregation?: SpawnAggregationParams;
+  // Parallel spawning parameters
+  parallel?: boolean;
+  count?: number;
+  concurrent?: number;
+  tasks?: string[];
 };
 
 export type SpawnSubagentContext = {

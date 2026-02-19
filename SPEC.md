@@ -1,85 +1,100 @@
-# SPEC.md - Sub-agent Result Aggregation
+# SPEC.md - Parallel Spawn Feature
 
 ## Problem Statement
 
-Currently, when spawning multiple sub-agents, each result must be collected manually. There's no built-in way to aggregate results from multiple sub-agents into a single collection.
+Currently, spawning multiple sub-agents requires making multiple sequential `sessions_spawn` calls. This is inefficient when sub-agents can run independently. The Parallel Spawn feature allows spawning multiple sub-agents simultaneously in a single call.
 
 ## Desired Behavior
 
 ### Core Requirements
 
-1. **Named result collections**
-   - Sub-agents can specify a collection name via `collectInto` param
-   - Multiple sub-agents can contribute to the same collection
-   - Parent can access all results from a collection
+1. **Parallel execution flag**
+   - Add `parallel: true` to spawn multiple sub-agents simultaneously
+   - Add `concurrent: number` as alternative (specifies max concurrent agents)
 
-2. **Merge strategies**
-   - `concat` - concatenate strings/arrays
-   - `json` - merge as JSON object
-   - `merge` - deep merge objects
-   - `first` - use first result only
-   - `last` - use last result only
+2. **Task array support**
+   - When `parallel: true`, `task` can be either:
+     - A single string (spawns multiple with same task)
+     - An array of strings (each task spawns a separate sub-agent)
 
-3. **Collection management**
-   - Collections are scoped to the parent session
-   - Auto-cleanup after parent completes
-   - Optional explicit cleanup
+3. **Parallel result handling**
+   - Each sub-agent runs independently
+   - Results can be collected via `collectInto` (existing feature)
+   - Summary of all parallel runs returned to parent
+
+4. **Concurrency control**
+   - `concurrent: 3` limits to 3 simultaneous agents
+   - When limits exceeded, queue and start as slots free up
 
 ### Proposed API
 
 ```typescript
-// Spawn with collection
+// Spawn 3 sub-agents in parallel (same task)
 sessions_spawn({
-  task: "do something",
-  collectInto: "$collection_name",
-  mergeStrategy: "concat" | "json" | "merge" | "first" | "last",
+  task: "research topic X",
+  parallel: true,
+  count: 3,
+  collectInto: "$research",
 });
 
-// Parent accesses results
-// After sub-agents complete, parent can access:
-// subagentResults["$collection_name"]
+// Spawn different tasks in parallel
+sessions_spawn({
+  task: ["task 1", "task 2", "task 3"],
+  parallel: true,
+  collectInto: "$results",
+});
+
+// Limited concurrency
+sessions_spawn({
+  task: ["task 1", "task 2", "task 3", "task 4", "task 5"],
+  concurrent: 2, // max 2 at a time
+});
 ```
 
 ## Implementation Plan
 
-### 1. Update SpawnSubagentParams
+### 1. Update SpawnSubagentParams Type
 
 Add new fields:
 
-- `collectInto?: string` - collection name (starts with $)
-- `mergeStrategy?: "concat" | "json" | "merge" | "first" | "last"`
+- `parallel?: boolean` - enable parallel execution
+- `count?: number` - number of agents to spawn (default: task array length or 1)
+- `concurrent?: number` - max concurrent agents (default: unlimited)
 
-### 2. Create Collection Store
+### 2. Update sessions-spawn-tool.ts Schema
 
-- In-memory Map for collections per session
-- Key: `sessionKey:collectionName`
-- Value: aggregated results
+Add:
 
-### 3. Update subagent-announce.ts
+- `parallel: Type.Optional(Type.Boolean())`
+- `count: Type.Optional(Type.Number({ minimum: 1 }))`
+- `concurrent: Type.Optional(Type.Number({ minimum: 1 }))`
 
-- When sub-agent completes, check for `collectInto`
-- If present, aggregate into collection instead of just announcing
-- Use merge strategy to combine results
+### 3. Update subagent-spawn.ts
 
-### 4. Expose collections to parent
+- Modify `spawnSubagentDirect` to handle parallel spawning
+- When parallel is true and task is array or count > 1:
+  - Loop and spawn multiple sub-agents
+  - Respect concurrent limit
+  - Return array of results
 
-- Add `subagentResults` to session context
-- Parent can access collections after sub-agents complete
+### 4. Update aggregation integration
+
+- Leverage existing `collectInto` feature
+- Each parallel sub-agent contributes to same collection
 
 ## Files to Modify
 
-| File                                      | Change                      |
-| ----------------------------------------- | --------------------------- |
-| `src/agents/subagent-spawn.ts`            | Add new params to type      |
-| `src/agents/tools/sessions-spawn-tool.ts` | Add params to schema        |
-| `src/agents/subagent-announce.ts`         | Implement aggregation logic |
-| `src/agents/subagent-registry.ts`         | Add collection store        |
+| File                                      | Change                                |
+| ----------------------------------------- | ------------------------------------- |
+| `src/agents/subagent-spawn.ts`            | Add parallel params to type and logic |
+| `src/agents/tools/sessions-spawn-tool.ts` | Add params to schema                  |
 
 ## Acceptance Criteria
 
-- [ ] Can spawn sub-agent with `collectInto` param
-- [ ] Multiple sub-agents can contribute to same collection
-- [ ] All merge strategies work correctly
-- [ ] Parent can access aggregated results
-- [ ] Collections are cleaned up after use
-- [ ] Backwards compatible (existing behavior unchanged)
+- [ ] Can spawn multiple sub-agents with `parallel: true`
+- [ ] `count` parameter controls number of agents
+- [ ] `concurrent` limits simultaneous agents
+- [ ] Array of tasks spawns separate sub-agents
+- [ ] Results can be collected via `collectInto`
+- [ ] Backwards compatible (existing single spawn works)
+- [ ] Proper error handling for invalid parameters

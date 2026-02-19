@@ -6,7 +6,7 @@ import type { AnyAgentTool } from "./common.js";
 import { jsonResult, readStringParam } from "./common.js";
 
 const SessionsSpawnToolSchema = Type.Object({
-  task: Type.String(),
+  task: Type.Union([Type.String(), Type.Array(Type.String())]),
   label: Type.Optional(Type.String()),
   agentId: Type.Optional(Type.String()),
   model: Type.Optional(Type.String()),
@@ -28,6 +28,10 @@ const SessionsSpawnToolSchema = Type.Object({
     ]),
   ),
   customFunction: Type.Optional(Type.String()),
+  // Parallel spawning parameters
+  parallel: Type.Optional(Type.Boolean()),
+  count: Type.Optional(Type.Number({ minimum: 1 })),
+  concurrent: Type.Optional(Type.Number({ minimum: 1 })),
 });
 
 export function createSessionsSpawnTool(opts?: {
@@ -51,7 +55,17 @@ export function createSessionsSpawnTool(opts?: {
     parameters: SessionsSpawnToolSchema,
     execute: async (_toolCallId, args) => {
       const params = args as Record<string, unknown>;
-      const task = readStringParam(params, "task", { required: true });
+      const taskParam = params.task;
+
+      // Handle task as string or array
+      let tasks: string[];
+      if (Array.isArray(taskParam)) {
+        tasks = taskParam.filter((t): t is string => typeof t === "string" && t.trim().length > 0);
+      } else {
+        const task = readStringParam(params, "task", { required: true });
+        tasks = [task];
+      }
+
       const label = typeof params.label === "string" ? params.label.trim() : "";
       const requestedAgentId = readStringParam(params, "agentId");
       const modelOverride = readStringParam(params, "model");
@@ -74,6 +88,12 @@ export function createSessionsSpawnTool(opts?: {
       const mergeStrategy = readStringParam(params, "mergeStrategy");
       const customFunction = readStringParam(params, "customFunction");
 
+      // Parallel spawning parameters
+      const parallel = params.parallel === true;
+      const count = typeof params.count === "number" && params.count > 0 ? params.count : 1;
+      const concurrent =
+        typeof params.concurrent === "number" && params.concurrent > 0 ? params.concurrent : 0;
+
       // Validate collectInto if provided
       if (collectInto !== undefined && !collectInto.startsWith("$")) {
         return jsonResult({
@@ -82,39 +102,135 @@ export function createSessionsSpawnTool(opts?: {
         });
       }
 
-      const result = await spawnSubagentDirect(
-        {
-          task,
-          label: label || undefined,
-          agentId: requestedAgentId,
-          model: modelOverride,
-          thinking: thinkingOverrideRaw,
-          runTimeoutSeconds,
-          cleanup,
-          expectsCompletionMessage: true,
-          aggregation:
-            collectInto !== undefined
-              ? {
-                  collectInto,
-                  mergeStrategy: mergeStrategy as "concat" | "json" | "merge" | "first" | "last" | "custom" | undefined,
-                  customFunction,
-                }
-              : undefined,
-        },
-        {
-          agentSessionKey: opts?.agentSessionKey,
-          agentChannel: opts?.agentChannel,
-          agentAccountId: opts?.agentAccountId,
-          agentTo: opts?.agentTo,
-          agentThreadId: opts?.agentThreadId,
-          agentGroupId: opts?.agentGroupId,
-          agentGroupChannel: opts?.agentGroupChannel,
-          agentGroupSpace: opts?.agentGroupSpace,
-          requesterAgentIdOverride: opts?.requesterAgentIdOverride,
-        },
-      );
+      // Determine final task list
+      let finalTasks: string[];
+      if (parallel || tasks.length > 1) {
+        // Multiple tasks provided or parallel flag set
+        if (tasks.length > 1) {
+          finalTasks = tasks;
+        } else if (count > 1) {
+          // Single task with count - repeat it
+          finalTasks = Array(count).fill(tasks[0]);
+        } else {
+          finalTasks = tasks;
+        }
+      } else {
+        finalTasks = tasks;
+      }
 
-      return jsonResult(result);
+      // If not parallel and only one task, use original behavior
+      if (!parallel && finalTasks.length === 1) {
+        const result = await spawnSubagentDirect(
+          {
+            task: finalTasks[0],
+            label: label || undefined,
+            agentId: requestedAgentId,
+            model: modelOverride,
+            thinking: thinkingOverrideRaw,
+            runTimeoutSeconds,
+            cleanup,
+            expectsCompletionMessage: true,
+            aggregation:
+              collectInto !== undefined
+                ? {
+                    collectInto,
+                    mergeStrategy: mergeStrategy as
+                      | "concat"
+                      | "json"
+                      | "merge"
+                      | "first"
+                      | "last"
+                      | "custom"
+                      | undefined,
+                    customFunction,
+                  }
+                : undefined,
+          },
+          {
+            agentSessionKey: opts?.agentSessionKey,
+            agentChannel: opts?.agentChannel,
+            agentAccountId: opts?.agentAccountId,
+            agentTo: opts?.agentTo,
+            agentThreadId: opts?.agentThreadId,
+            agentGroupId: opts?.agentGroupId,
+            agentGroupChannel: opts?.agentGroupChannel,
+            agentGroupSpace: opts?.agentGroupSpace,
+            requesterAgentIdOverride: opts?.requesterAgentIdOverride,
+          },
+        );
+        return jsonResult(result);
+      }
+
+      // Parallel spawning
+      const maxConcurrent =
+        concurrent > 0 ? Math.min(concurrent, finalTasks.length) : finalTasks.length;
+      const results: Awaited<ReturnType<typeof spawnSubagentDirect>>[] = [];
+
+      // Process in batches respecting concurrent limit
+      for (let i = 0; i < finalTasks.length; i += maxConcurrent) {
+        const batch = finalTasks.slice(i, i + maxConcurrent);
+        const batchResults = await Promise.all(
+          batch.map((task, idx) =>
+            spawnSubagentDirect(
+              {
+                task,
+                label: label ? `${label}-${i + idx + 1}` : undefined,
+                agentId: requestedAgentId,
+                model: modelOverride,
+                thinking: thinkingOverrideRaw,
+                runTimeoutSeconds,
+                cleanup,
+                expectsCompletionMessage: true,
+                aggregation:
+                  collectInto !== undefined
+                    ? {
+                        collectInto,
+                        mergeStrategy: mergeStrategy as
+                          | "concat"
+                          | "json"
+                          | "merge"
+                          | "first"
+                          | "last"
+                          | "custom"
+                          | undefined,
+                        customFunction,
+                      }
+                    : undefined,
+              },
+              {
+                agentSessionKey: opts?.agentSessionKey,
+                agentChannel: opts?.agentChannel,
+                agentAccountId: opts?.agentAccountId,
+                agentTo: opts?.agentTo,
+                agentThreadId: opts?.agentThreadId,
+                agentGroupId: opts?.agentGroupId,
+                agentGroupChannel: opts?.agentGroupChannel,
+                agentGroupSpace: opts?.agentGroupSpace,
+                requesterAgentIdOverride: opts?.requesterAgentIdOverride,
+              },
+            ),
+          ),
+        );
+        results.push(...batchResults);
+      }
+
+      // Return array of results
+      const accepted = results.filter((r) => r.status === "accepted");
+      const failed = results.filter((r) => r.status !== "accepted");
+
+      return jsonResult({
+        status: failed.length === 0 ? "accepted" : "partial",
+        spawned: results.length,
+        accepted: accepted.length,
+        failed: failed.length,
+        results: results.map((r) => ({
+          status: r.status,
+          childSessionKey: r.childSessionKey,
+          runId: r.runId,
+          error: r.error,
+        })),
+        note: `Spawned ${results.length} sub-agent(s) in parallel. Use runIds to track individual runs.`,
+      });
     },
   };
 }
