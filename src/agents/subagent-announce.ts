@@ -18,6 +18,7 @@ import {
   normalizeDeliveryContext,
 } from "../utils/delivery-context.js";
 import { isDeliverableMessageChannel } from "../utils/message-channel.js";
+import { getAllAggregatedResults, addResultToGroup } from "./aggregation/index.js";
 import {
   buildAnnounceIdFromChildRun,
   buildAnnounceIdempotencyKey,
@@ -30,12 +31,8 @@ import {
 } from "./pi-embedded.js";
 import { type AnnounceQueueItem, enqueueAnnounce } from "./subagent-announce-queue.js";
 import { getSubagentDepthFromSessionStore } from "./subagent-depth.js";
-import { sanitizeTextContent, extractAssistantText } from "./tools/sessions-helpers.js";
-import {
-  getAllAggregatedResults,
-  addResultToGroup,
-} from "./aggregation/index.js";
 import { listSubagentRunsForRequester } from "./subagent-registry.js";
+import { sanitizeTextContent, extractAssistantText } from "./tools/sessions-helpers.js";
 
 type ToolResultMessage = {
   role?: unknown;
@@ -606,6 +603,8 @@ export function buildSubagentSystemPrompt(params: {
   childDepth?: number;
   /** Config value: max allowed spawn depth. */
   maxSpawnDepth?: number;
+  /** Shared context from parent to propagate to child */
+  sharedContext?: Record<string, unknown>;
 }) {
   const taskText =
     typeof params.task === "string" && params.task.trim()
@@ -964,18 +963,19 @@ export async function runSubagentAnnounceFlow(params: {
       const runs = listSubagentRunsForRequester(targetRequesterSessionKey);
       const entry = runs.find((r) => r.childSessionKey === params.childSessionKey);
       if (entry?.aggregation) {
-        addResultToGroup(
-          entry.requesterSessionKey,
-          entry.aggregation.collectInto,
-          {
-            runId: params.childRunId,
-            sessionKey: params.childSessionKey,
-            status: outcome?.status === "ok" ? "success" : outcome?.status === "timeout" ? "timeout" : "error",
-            output: reply,
-            error: outcome?.error,
-            completedAt: Date.now(),
-          },
-        );
+        addResultToGroup(entry.requesterSessionKey, entry.aggregation.collectInto, {
+          runId: params.childRunId,
+          sessionKey: params.childSessionKey,
+          status:
+            outcome?.status === "ok"
+              ? "success"
+              : outcome?.status === "timeout"
+                ? "timeout"
+                : "error",
+          output: reply,
+          error: outcome?.error,
+          completedAt: Date.now(),
+        });
       }
     }
 
