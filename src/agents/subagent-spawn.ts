@@ -43,6 +43,12 @@ export type SpawnSubagentParams = {
   chainAfter?: string;
   dependsOn?: string;
   includeDependencyResult?: boolean;
+  // Retry parameters
+  retryCount?: number;
+  retryDelay?: number;
+  retryBackoff?: "fixed" | "exponential" | "linear";
+  retryOn?: string[];
+  retryMaxTime?: number;
 };
 
 export type SpawnSubagentContext = {
@@ -82,6 +88,82 @@ export function splitModelRef(ref?: string) {
     return { provider, model };
   }
   return { provider: undefined, model: trimmed };
+}
+
+export type RetryBackoffStrategy = "fixed" | "exponential" | "linear";
+
+export function calculateDelay(
+  attempt: number,
+  baseDelay: number,
+  strategy: RetryBackoffStrategy,
+): number {
+  switch (strategy) {
+    case "exponential":
+      return baseDelay * Math.pow(2, attempt);
+    case "linear":
+      return baseDelay * (attempt + 1);
+    case "fixed":
+    default:
+      return baseDelay;
+  }
+}
+
+function isRetryableError(errorMessage: string, retryOnPatterns: string[] | undefined): boolean {
+  if (!retryOnPatterns || retryOnPatterns.length === 0) {
+    return true;
+  }
+  const lowerErrorMessage = errorMessage.toLowerCase();
+  return retryOnPatterns.some((pattern) => lowerErrorMessage.includes(pattern.toLowerCase()));
+}
+
+export async function spawnSubagent(
+  params: SpawnSubagentParams,
+  ctx: SpawnSubagentContext,
+): Promise<SpawnSubagentResult> {
+  const retryCount = params.retryCount ?? 0;
+  const retryDelay = params.retryDelay ?? 1000;
+  const retryBackoff = params.retryBackoff ?? "exponential";
+  const retryOn = params.retryOn;
+  const retryMaxTime = params.retryMaxTime;
+
+  const startTime = Date.now();
+
+  let lastResult: SpawnSubagentResult | undefined;
+
+  for (let attempt = 0; attempt <= retryCount; attempt++) {
+    lastResult = await spawnSubagentDirect(params, ctx);
+
+    if (lastResult.status === "accepted") {
+      return lastResult;
+    }
+
+    if (attempt < retryCount) {
+      const errorMessage = lastResult?.error ?? "";
+
+      if (!isRetryableError(errorMessage, retryOn)) {
+        return lastResult;
+      }
+
+      if (retryMaxTime !== undefined) {
+        const elapsedTime = Date.now() - startTime;
+        if (elapsedTime >= retryMaxTime) {
+          return lastResult;
+        }
+      }
+
+      const delay = calculateDelay(attempt, retryDelay, retryBackoff);
+
+      const remainingTime =
+        retryMaxTime !== undefined ? retryMaxTime - (Date.now() - startTime) : undefined;
+      const actualDelay = remainingTime !== undefined ? Math.min(delay, remainingTime) : delay;
+
+      if (actualDelay > 0) {
+        await new Promise((resolve) => setTimeout(resolve, actualDelay));
+      }
+    }
+  }
+
+  return lastResult ?? { status: "error", error: "Unknown error during spawn" };
 }
 
 export async function spawnSubagentDirect(

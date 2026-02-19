@@ -1,7 +1,7 @@
 import { Type } from "@sinclair/typebox";
 import type { GatewayMessageChannel } from "../../utils/message-channel.js";
 import { optionalStringEnum } from "../schema/typebox.js";
-import { spawnSubagentDirect } from "../subagent-spawn.js";
+import { spawnSubagent } from "../subagent-spawn.js";
 import type { AnyAgentTool } from "./common.js";
 import { jsonResult, readStringParam } from "./common.js";
 
@@ -36,6 +36,14 @@ const SessionsSpawnToolSchema = Type.Object({
   chainAfter: Type.Optional(Type.String()),
   dependsOn: Type.Optional(Type.String()),
   includeDependencyResult: Type.Optional(Type.Boolean()),
+  // Retry parameters
+  retryCount: Type.Optional(Type.Number({ minimum: 0 })),
+  retryDelay: Type.Optional(Type.Number({ minimum: 0 })),
+  retryBackoff: Type.Optional(
+    Type.Union([Type.Literal("fixed"), Type.Literal("exponential"), Type.Literal("linear")]),
+  ),
+  retryOn: Type.Optional(Type.Array(Type.String())),
+  retryMaxTime: Type.Optional(Type.Number({ minimum: 0 })),
 });
 
 export function createSessionsSpawnTool(opts?: {
@@ -103,6 +111,27 @@ export function createSessionsSpawnTool(opts?: {
       const dependsOn = readStringParam(params, "dependsOn");
       const includeDependencyResult = params.includeDependencyResult === true;
 
+      // Retry parameters
+      const retryCount =
+        typeof params.retryCount === "number" && params.retryCount >= 0
+          ? Math.floor(params.retryCount)
+          : 0;
+      const retryDelay =
+        typeof params.retryDelay === "number" && params.retryDelay >= 0
+          ? Math.floor(params.retryDelay)
+          : 1000;
+      const retryBackoff =
+        params.retryBackoff === "fixed" || params.retryBackoff === "linear"
+          ? params.retryBackoff
+          : "exponential";
+      const retryOn = Array.isArray(params.retryOn)
+        ? params.retryOn.filter((p): p is string => typeof p === "string")
+        : undefined;
+      const retryMaxTime =
+        typeof params.retryMaxTime === "number" && params.retryMaxTime >= 0
+          ? Math.floor(params.retryMaxTime)
+          : undefined;
+
       // Resolve dependency runId (chainAfter takes precedence, dependsOn is alias)
       const dependencyRunId = chainAfter || dependsOn;
 
@@ -130,9 +159,9 @@ export function createSessionsSpawnTool(opts?: {
         finalTasks = tasks;
       }
 
-      // If not parallel and only one task, use original behavior
+      // If not parallel and only one task, use spawnSubagent (which handles retries)
       if (!parallel && finalTasks.length === 1) {
-        const result = await spawnSubagentDirect(
+        const result = await spawnSubagent(
           {
             task: finalTasks[0],
             label: label || undefined,
@@ -159,6 +188,11 @@ export function createSessionsSpawnTool(opts?: {
                 : undefined,
             chainAfter: dependencyRunId,
             includeDependencyResult,
+            retryCount,
+            retryDelay,
+            retryBackoff,
+            retryOn,
+            retryMaxTime,
           },
           {
             agentSessionKey: opts?.agentSessionKey,
@@ -178,14 +212,14 @@ export function createSessionsSpawnTool(opts?: {
       // Parallel spawning
       const maxConcurrent =
         concurrent > 0 ? Math.min(concurrent, finalTasks.length) : finalTasks.length;
-      const results: Awaited<ReturnType<typeof spawnSubagentDirect>>[] = [];
+      const results: Awaited<ReturnType<typeof spawnSubagent>>[] = [];
 
       // Process in batches respecting concurrent limit
       for (let i = 0; i < finalTasks.length; i += maxConcurrent) {
         const batch = finalTasks.slice(i, i + maxConcurrent);
         const batchResults = await Promise.all(
           batch.map((task, idx) =>
-            spawnSubagentDirect(
+            spawnSubagent(
               {
                 task,
                 label: label ? `${label}-${i + idx + 1}` : undefined,
@@ -212,6 +246,11 @@ export function createSessionsSpawnTool(opts?: {
                     : undefined,
                 chainAfter: dependencyRunId,
                 includeDependencyResult,
+                retryCount,
+                retryDelay,
+                retryBackoff,
+                retryOn,
+                retryMaxTime,
               },
               {
                 agentSessionKey: opts?.agentSessionKey,
