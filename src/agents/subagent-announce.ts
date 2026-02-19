@@ -33,7 +33,9 @@ import { getSubagentDepthFromSessionStore } from "./subagent-depth.js";
 import { sanitizeTextContent, extractAssistantText } from "./tools/sessions-helpers.js";
 import {
   getAllAggregatedResults,
+  addResultToGroup,
 } from "./aggregation/index.js";
+import { listSubagentRunsForRequester } from "./subagent-registry.js";
 
 type ToolResultMessage = {
   role?: unknown;
@@ -956,6 +958,26 @@ export async function runSubagentAnnounceFlow(params: {
       directIdempotencyKey,
     });
     didAnnounce = delivery.delivered;
+
+    // Add this subagent's result to aggregation group if collectInto was specified
+    if (reply) {
+      const runs = listSubagentRunsForRequester(targetRequesterSessionKey);
+      const entry = runs.find((r) => r.childSessionKey === params.childSessionKey);
+      if (entry?.aggregation) {
+        addResultToGroup(
+          entry.requesterSessionKey,
+          entry.aggregation.collectInto,
+          {
+            runId: params.childRunId,
+            sessionKey: params.childSessionKey,
+            status: outcome?.status === "ok" ? "success" : outcome?.status === "timeout" ? "timeout" : "error",
+            output: reply,
+            error: outcome?.error,
+            completedAt: Date.now(),
+          },
+        );
+      }
+    }
 
     // Check for aggregated results (collectInto) and include them in the announcement
     const aggregatedResults = getAllAggregatedResults(targetRequesterSessionKey);
