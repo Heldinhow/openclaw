@@ -1,8 +1,67 @@
-# SPEC.md - Context Sharing Feature
+# SPEC.md - Sub-agent Pipeline/Chained Feature
 
-## Problem Statement
+## Status: ✅ IMPLEMENTED
 
-Currently, when spawning multiple sub-agents (either in parallel or chained via `chainAfter`/`dependsOn`), there is no built-in way to share state between them. Sub-agents run in isolation with no access to shared context or data produced by sibling/parent sub-agents. The Context Sharing feature enables passing and accessing shared state between sub-agents.
+The Pipeline/Chained feature is already fully implemented in the codebase.
+
+## Implementation Details
+
+### 1. Schema Parameters (sessions-spawn-tool.ts)
+
+```typescript
+// Chain/dependency parameters
+chainAfter: Type.Optional(Type.String()),
+dependsOn: Type.Optional(Type.String()),
+includeDependencyResult: Type.Optional(Type.Boolean()),
+```
+
+### 2. Core Implementation (subagent-spawn.ts)
+
+The `spawnSubagentDirect` function handles:
+
+- **Dependency check**: Verifies if the dependency run exists
+- **Wait for completion**: If dependency hasn't completed, waits for it
+- **Result retrieval**: If `includeDependencyResult=true`, retrieves the dependency's output
+- **Task injection**: Prepends dependency result to current task
+
+### 3. Registry Functions (subagent-registry.ts)
+
+- `getSubagentRunStatus(runId)` - Check run status
+- `waitForSubagentRunCompletion(runId, timeoutMs)` - Wait for run completion
+- `storeSharedContext(runId, context)` - Store context
+- `getSharedContext(runId)` - Retrieve context
+
+## Usage Example
+
+```typescript
+// Chain: Sub-agent B waits for Sub-agent A to complete
+sessions_spawn({
+  task: "First task",
+  label: "step-1",
+});
+
+// Get the runId from the result, then spawn chained
+sessions_spawn({
+  task: "Second task that depends on first",
+  chainAfter: "run-id-from-step-1",
+  includeDependencyResult: true, // Includes previous result in task
+});
+
+// Or use dependsOn as alias
+sessions_spawn({
+  task: "Task depending on another",
+  dependsOn: "other-run-id",
+});
+```
+
+## Acceptance Criteria
+
+- [x] Can specify chainAfter or dependsOn parameter
+- [x] Sub-agent waits for dependency to complete before starting
+- [x] Can include dependency result in task via includeDependencyResult
+- [x] Handles dependency errors appropriately
+- [x] Works with parallel spawning
+- [x] Backwards compatible (existing code works without chain parameters)
 
 ## Desired Behavior
 
