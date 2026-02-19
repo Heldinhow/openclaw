@@ -10,6 +10,8 @@ import {
   saveSubagentRegistryToDisk,
 } from "./subagent-registry.store.js";
 import { resolveAgentTimeoutMs } from "./timeout.js";
+import type { SpawnAggregationParams } from "./aggregation/types.js";
+import { handleSubagentResult } from "./aggregation/index.js";
 
 export type SubagentRunRecord = {
   runId: string;
@@ -35,6 +37,8 @@ export type SubagentRunRecord = {
   announceRetryCount?: number;
   /** Timestamp of the last announce retry attempt (for backoff). */
   lastAnnounceRetryAt?: number;
+  /** Aggregation params for result aggregation feature */
+  aggregation?: SpawnAggregationParams;
 };
 
 const subagentRuns = new Map<string, SubagentRunRecord>();
@@ -516,6 +520,7 @@ export function registerSubagentRun(params: {
   model?: string;
   runTimeoutSeconds?: number;
   expectsCompletionMessage?: boolean;
+  aggregation?: SpawnAggregationParams;
 }) {
   const now = Date.now();
   const cfg = loadConfig();
@@ -540,6 +545,7 @@ export function registerSubagentRun(params: {
     startedAt: now,
     archiveAtMs,
     cleanupHandled: false,
+    aggregation: params.aggregation,
   });
   ensureListener();
   persistSubagentRuns();
@@ -588,6 +594,12 @@ async function waitForSubagentCompletion(runId: string, waitTimeoutMs: number) {
       mutated = true;
     }
     const waitError = typeof wait.error === "string" ? wait.error : undefined;
+    const outcomeStatus: "ok" | "error" | "timeout" =
+      wait.status === "error"
+        ? "error"
+        : wait.status === "timeout"
+          ? "timeout"
+          : "ok";
     entry.outcome =
       wait.status === "error"
         ? { status: "error", error: waitError }
@@ -595,6 +607,14 @@ async function waitForSubagentCompletion(runId: string, waitTimeoutMs: number) {
           ? { status: "timeout" }
           : { status: "ok" };
     mutated = true;
+    if (entry.aggregation) {
+      handleSubagentResult(
+        entry.requesterSessionKey,
+        runId,
+        entry.childSessionKey,
+        { status: outcomeStatus, error: waitError },
+      );
+    }
     if (mutated) {
       persistSubagentRuns();
     }

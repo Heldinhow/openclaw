@@ -15,6 +15,19 @@ const SessionsSpawnToolSchema = Type.Object({
   // Back-compat: older callers used timeoutSeconds for this tool.
   timeoutSeconds: Type.Optional(Type.Number({ minimum: 0 })),
   cleanup: optionalStringEnum(["delete", "keep"] as const),
+  // Aggregation parameters
+  collectInto: Type.Optional(Type.String()),
+  mergeStrategy: Type.Optional(
+    Type.Union([
+      Type.Literal("concat"),
+      Type.Literal("json"),
+      Type.Literal("merge"),
+      Type.Literal("first"),
+      Type.Literal("last"),
+      Type.Literal("custom"),
+    ]),
+  ),
+  customFunction: Type.Optional(Type.String()),
 });
 
 export function createSessionsSpawnTool(opts?: {
@@ -57,6 +70,18 @@ export function createSessionsSpawnTool(opts?: {
           ? Math.max(0, Math.floor(timeoutSecondsCandidate))
           : undefined;
 
+      const collectInto = readStringParam(params, "collectInto");
+      const mergeStrategy = readStringParam(params, "mergeStrategy");
+      const customFunction = readStringParam(params, "customFunction");
+
+      // Validate collectInto if provided
+      if (collectInto !== undefined && !collectInto.startsWith("$")) {
+        return jsonResult({
+          error: 'collectInto must start with "$" (e.g., "$research")',
+          code: "INVALID_COLLECT_INTO",
+        });
+      }
+
       const result = await spawnSubagentDirect(
         {
           task,
@@ -67,6 +92,14 @@ export function createSessionsSpawnTool(opts?: {
           runTimeoutSeconds,
           cleanup,
           expectsCompletionMessage: true,
+          aggregation:
+            collectInto !== undefined
+              ? {
+                  collectInto,
+                  mergeStrategy: mergeStrategy as "concat" | "json" | "merge" | "first" | "last" | "custom" | undefined,
+                  customFunction,
+                }
+              : undefined,
         },
         {
           agentSessionKey: opts?.agentSessionKey,

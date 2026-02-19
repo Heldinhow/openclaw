@@ -16,6 +16,8 @@ import {
   resolveInternalSessionKey,
   resolveMainSessionAlias,
 } from "./tools/sessions-helpers.js";
+import { createAggregationGroup, addSubAgentToGroup } from "./aggregation/index.js";
+import type { SpawnAggregationParams } from "./aggregation/types.js";
 
 export type SpawnSubagentParams = {
   task: string;
@@ -26,6 +28,7 @@ export type SpawnSubagentParams = {
   runTimeoutSeconds?: number;
   cleanup?: "delete" | "keep";
   expectsCompletionMessage?: boolean;
+  aggregation?: SpawnAggregationParams;
 };
 
 export type SpawnSubagentContext = {
@@ -293,7 +296,13 @@ export async function spawnSubagentDirect(
     model: resolvedModel,
     runTimeoutSeconds,
     expectsCompletionMessage: params.expectsCompletionMessage === true,
+    aggregation: params.aggregation,
   });
+
+  if (params.aggregation) {
+    createAggregationGroup(requesterInternalKey, params.aggregation);
+    addSubAgentToGroup(requesterInternalKey, params.aggregation.collectInto, childRunId);
+  }
 
   return {
     status: "accepted",

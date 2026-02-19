@@ -31,6 +31,9 @@ import {
 import { type AnnounceQueueItem, enqueueAnnounce } from "./subagent-announce-queue.js";
 import { getSubagentDepthFromSessionStore } from "./subagent-depth.js";
 import { sanitizeTextContent, extractAssistantText } from "./tools/sessions-helpers.js";
+import {
+  getAllAggregatedResults,
+} from "./aggregation/index.js";
 
 type ToolResultMessage = {
   role?: unknown;
@@ -953,6 +956,45 @@ export async function runSubagentAnnounceFlow(params: {
       directIdempotencyKey,
     });
     didAnnounce = delivery.delivered;
+
+    // Check for aggregated results (collectInto) and include them in the announcement
+    const aggregatedResults = getAllAggregatedResults(targetRequesterSessionKey);
+    const aggregatedResultKeys = Object.keys(aggregatedResults);
+    if (aggregatedResultKeys.length > 0) {
+      // Add aggregated results to the trigger message
+      const aggregatedSummary = aggregatedResultKeys
+        .map((key) => {
+          const result = aggregatedResults[key];
+          const resultStr = typeof result === "string" ? result : JSON.stringify(result);
+          return `📦 ${key}: ${resultStr}`;
+        })
+        .join("\n");
+
+      const aggregatedMessage = [
+        triggerMessage,
+        "",
+        "---",
+        "Collected Results (collectInto):",
+        aggregatedSummary,
+      ].join("\n");
+
+      // Deliver the aggregated results as a follow-up
+      await deliverSubagentAnnouncement({
+        requesterSessionKey: targetRequesterSessionKey,
+        announceId: `${announceId}-aggregated`,
+        triggerMessage: aggregatedMessage,
+        completionMessage: undefined,
+        summaryLine: `${taskLabel} - collected results`,
+        requesterOrigin: targetRequesterOrigin,
+        completionDirectOrigin: targetRequesterOrigin,
+        directOrigin,
+        targetRequesterSessionKey,
+        requesterIsSubagent,
+        expectsCompletionMessage: false,
+        directIdempotencyKey: `${directIdempotencyKey}-aggregated`,
+      });
+    }
+
     if (!delivery.delivered && delivery.path === "direct" && delivery.error) {
       defaultRuntime.error?.(
         `Subagent completion direct announce failed for run ${params.childRunId}: ${delivery.error}`,
