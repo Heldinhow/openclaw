@@ -13,6 +13,40 @@ import {
 } from "./subagent-registry.store.js";
 import { resolveAgentTimeoutMs } from "./timeout.js";
 
+type RetryBackoffStrategy = "fixed" | "exponential" | "linear";
+
+function calculateDelay(
+  attempt: number,
+  baseDelay: number,
+  strategy: RetryBackoffStrategy,
+): number {
+  switch (strategy) {
+    case "exponential":
+      return baseDelay * Math.pow(2, attempt);
+    case "linear":
+      return baseDelay * (attempt + 1);
+    case "fixed":
+    default:
+      return baseDelay;
+  }
+}
+
+function isRetryableError(errorMessage: string, retryOnPatterns: string[] | undefined): boolean {
+  if (!retryOnPatterns || retryOnPatterns.length === 0) {
+    return true;
+  }
+  const lowerErrorMessage = errorMessage.toLowerCase();
+  return retryOnPatterns.some((pattern) => lowerErrorMessage.includes(pattern.toLowerCase()));
+}
+
+export type RetryConfig = {
+  retryCount: number;
+  retryDelay: number;
+  retryBackoff: "fixed" | "exponential" | "linear";
+  retryOn?: string[];
+  retryMaxTime?: number;
+};
+
 export type SubagentRunRecord = {
   runId: string;
   childSessionKey: string;
@@ -43,6 +77,10 @@ export type SubagentRunRecord = {
   cancellationRequestedAt?: number;
   /** Aggregation params for result aggregation feature */
   aggregation?: SpawnAggregationParams;
+  retryConfig?: RetryConfig;
+  retryAttempt?: number;
+  originalTask?: string;
+  originalLabel?: string;
 };
 
 const subagentRuns = new Map<string, SubagentRunRecord>();
@@ -334,10 +372,80 @@ function ensureListener() {
       return;
     }
 
+    const shouldRetry = handleExecutionRetry(entry);
+    if (shouldRetry) {
+      return;
+    }
+
     if (!startSubagentAnnounceCleanupFlow(evt.runId, entry)) {
       return;
     }
   });
+}
+
+async function spawnRetrySubagent(originalEntry: SubagentRunRecord): Promise<void> {
+  const retryAttempt = (originalEntry.retryAttempt ?? 0) + 1;
+  const { spawnSubagent } = await import("./subagent-spawn.js");
+
+  const result = await spawnSubagent(
+    {
+      task: originalEntry.originalTask ?? originalEntry.task,
+      label: originalEntry.originalLabel ?? originalEntry.label,
+      agentId: undefined,
+      model: originalEntry.model,
+      runTimeoutSeconds: originalEntry.runTimeoutSeconds,
+      cleanup: originalEntry.cleanup,
+      expectsCompletionMessage: originalEntry.expectsCompletionMessage,
+      aggregation: originalEntry.aggregation,
+    },
+    {
+      agentSessionKey: originalEntry.requesterSessionKey,
+    },
+  );
+
+  if (result.status === "accepted") {
+    originalEntry.retryAttempt = retryAttempt;
+    persistSubagentRuns();
+  }
+}
+
+function handleExecutionRetry(entry: SubagentRunRecord): boolean {
+  if (entry.outcome?.status !== "error") {
+    return false;
+  }
+
+  if (!entry.retryConfig || entry.retryConfig.retryCount <= 0) {
+    return false;
+  }
+
+  const currentAttempt = entry.retryAttempt ?? 0;
+  if (currentAttempt >= entry.retryConfig.retryCount) {
+    return false;
+  }
+
+  const errorMessage = entry.outcome?.error ?? "";
+  if (!isRetryableError(errorMessage, entry.retryConfig.retryOn)) {
+    return false;
+  }
+
+  if (entry.retryConfig.retryMaxTime) {
+    const elapsed = Date.now() - (entry.startedAt ?? entry.createdAt);
+    if (elapsed >= entry.retryConfig.retryMaxTime) {
+      return false;
+    }
+  }
+
+  const delay = calculateDelay(
+    currentAttempt,
+    entry.retryConfig.retryDelay,
+    entry.retryConfig.retryBackoff,
+  );
+
+  setTimeout(() => {
+    void spawnRetrySubagent(entry);
+  }, delay).unref?.();
+
+  return true;
 }
 
 function finalizeSubagentCleanup(runId: string, cleanup: "delete" | "keep", didAnnounce: boolean) {
@@ -540,6 +648,9 @@ export function registerSubagentRun(params: {
   runTimeoutSeconds?: number;
   expectsCompletionMessage?: boolean;
   aggregation?: SpawnAggregationParams;
+  retryConfig?: RetryConfig;
+  originalTask?: string;
+  originalLabel?: string;
 }) {
   const now = Date.now();
   const cfg = loadConfig();
@@ -565,6 +676,9 @@ export function registerSubagentRun(params: {
     archiveAtMs,
     cleanupHandled: false,
     aggregation: params.aggregation,
+    retryConfig: params.retryConfig,
+    originalTask: params.originalTask,
+    originalLabel: params.originalLabel,
   });
   ensureListener();
   persistSubagentRuns();

@@ -112,7 +112,10 @@ export function calculateDelay(
   }
 }
 
-function isRetryableError(errorMessage: string, retryOnPatterns: string[] | undefined): boolean {
+export function isRetryableError(
+  errorMessage: string,
+  retryOnPatterns: string[] | undefined,
+): boolean {
   if (!retryOnPatterns || retryOnPatterns.length === 0) {
     return true;
   }
@@ -482,6 +485,18 @@ export async function spawnSubagentDirect(
     runTimeoutSeconds,
     expectsCompletionMessage: params.expectsCompletionMessage === true,
     aggregation: params.aggregation,
+    retryConfig:
+      params.retryCount !== undefined && params.retryCount > 0
+        ? {
+            retryCount: params.retryCount,
+            retryDelay: params.retryDelay ?? 1000,
+            retryBackoff: params.retryBackoff ?? "exponential",
+            retryOn: params.retryOn,
+            retryMaxTime: params.retryMaxTime,
+          }
+        : undefined,
+    originalTask: task,
+    originalLabel: label || undefined,
   });
 
   // Store shared context for this run (available to child sub-agents)
