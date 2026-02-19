@@ -28,13 +28,14 @@ import {
   markSubagentRunTerminated,
   markSubagentRunForSteerRestart,
   replaceSubagentRunAfterSteer,
+  requestSubagentCancellation,
   type SubagentRunRecord,
 } from "../subagent-registry.js";
 import type { AnyAgentTool } from "./common.js";
 import { jsonResult, readNumberParam, readStringParam } from "./common.js";
 import { resolveInternalSessionKey, resolveMainSessionAlias } from "./sessions-helpers.js";
 
-const SUBAGENT_ACTIONS = ["list", "kill", "steer"] as const;
+const SUBAGENT_ACTIONS = ["list", "kill", "steer", "cancel"] as const;
 type SubagentAction = (typeof SUBAGENT_ACTIONS)[number];
 
 const DEFAULT_RECENT_MINUTES = 30;
@@ -364,6 +365,49 @@ async function cascadeKillChildren(params: {
   return { killed, labels };
 }
 
+/**
+ * Recursively request cancellation for all descendant subagent runs spawned by a given parent session key.
+ * This ensures that when a subagent is cancelled, all of its children (and their children) are also marked for cancellation.
+ */
+async function cascadeCancelChildren(params: {
+  cfg: ReturnType<typeof loadConfig>;
+  parentChildSessionKey: string;
+  cache: Map<string, Record<string, SessionEntry>>;
+  seenChildSessionKeys?: Set<string>;
+}): Promise<{ cancelled: number; labels: string[] }> {
+  const childRuns = listSubagentRunsForRequester(params.parentChildSessionKey);
+  const seenChildSessionKeys = params.seenChildSessionKeys ?? new Set<string>();
+  let cancelled = 0;
+  const labels: string[] = [];
+
+  for (const run of childRuns) {
+    const childKey = run.childSessionKey?.trim();
+    if (!childKey || seenChildSessionKeys.has(childKey)) {
+      continue;
+    }
+    seenChildSessionKeys.add(childKey);
+
+    if (!run.endedAt) {
+      const requested = requestSubagentCancellation(run.runId);
+      if (requested) {
+        cancelled += 1;
+        labels.push(resolveRunLabel(run));
+      }
+    }
+
+    const cascade = await cascadeCancelChildren({
+      cfg: params.cfg,
+      parentChildSessionKey: childKey,
+      cache: params.cache,
+      seenChildSessionKeys,
+    });
+    cancelled += cascade.cancelled;
+    labels.push(...cascade.labels);
+  }
+
+  return { cancelled, labels };
+}
+
 function buildListText(params: {
   active: Array<{ line: string }>;
   recent: Array<{ line: string }>;
@@ -562,6 +606,109 @@ export function createSubagentsTool(opts?: { agentSessionKey?: string }): AnyAge
           text: stopResult.killed
             ? `killed ${resolveRunLabel(resolved.entry)}${cascadeText}.`
             : `killed ${cascade.killed} descendant${cascade.killed === 1 ? "" : "s"} of ${resolveRunLabel(resolved.entry)}.`,
+        });
+      }
+      if (action === "cancel") {
+        const target = readStringParam(params, "target", { required: true });
+        if (target === "all" || target === "*") {
+          const cache = new Map<string, Record<string, SessionEntry>>();
+          const seenChildSessionKeys = new Set<string>();
+          const cancelledLabels: string[] = [];
+          let cancelled = 0;
+          for (const entry of runs) {
+            const childKey = entry.childSessionKey?.trim();
+            if (!childKey || seenChildSessionKeys.has(childKey)) {
+              continue;
+            }
+            seenChildSessionKeys.add(childKey);
+
+            if (!entry.endedAt) {
+              const requested = requestSubagentCancellation(entry.runId);
+              if (requested) {
+                cancelled += 1;
+                cancelledLabels.push(resolveRunLabel(entry));
+              }
+            }
+
+            const cascade = await cascadeCancelChildren({
+              cfg,
+              parentChildSessionKey: childKey,
+              cache,
+              seenChildSessionKeys,
+            });
+            cancelled += cascade.cancelled;
+            cancelledLabels.push(...cascade.labels);
+          }
+          return jsonResult({
+            status: "ok",
+            action: "cancel",
+            target: "all",
+            cancelled,
+            labels: cancelledLabels,
+            text:
+              cancelled > 0
+                ? `cancellation requested for ${cancelled} subagent${cancelled === 1 ? "" : "s"}.`
+                : "no running subagents to cancel.",
+          });
+        }
+        const resolved = resolveSubagentTarget(runs, target, { recentMinutes });
+        if (!resolved.entry) {
+          return jsonResult({
+            status: "error",
+            action: "cancel",
+            target,
+            error: resolved.error ?? "Unknown subagent target.",
+          });
+        }
+        if (resolved.entry.endedAt) {
+          return jsonResult({
+            status: "done",
+            action: "cancel",
+            target,
+            runId: resolved.entry.runId,
+            sessionKey: resolved.entry.childSessionKey,
+            text: `${resolveRunLabel(resolved.entry)} is already finished.`,
+          });
+        }
+        const requested = requestSubagentCancellation(resolved.entry.runId);
+        const cancelCache = new Map<string, Record<string, SessionEntry>>();
+        const seenChildSessionKeys = new Set<string>();
+        const targetChildKey = resolved.entry.childSessionKey?.trim();
+        if (targetChildKey) {
+          seenChildSessionKeys.add(targetChildKey);
+        }
+        const cascade = await cascadeCancelChildren({
+          cfg,
+          parentChildSessionKey: resolved.entry.childSessionKey,
+          cache: cancelCache,
+          seenChildSessionKeys,
+        });
+        if (!requested && cascade.cancelled === 0) {
+          return jsonResult({
+            status: "done",
+            action: "cancel",
+            target,
+            runId: resolved.entry.runId,
+            sessionKey: resolved.entry.childSessionKey,
+            text: `${resolveRunLabel(resolved.entry)} is already finished.`,
+          });
+        }
+        const cascadeText =
+          cascade.cancelled > 0
+            ? ` (+ ${cascade.cancelled} descendant${cascade.cancelled === 1 ? "" : "s"})`
+            : "";
+        return jsonResult({
+          status: "ok",
+          action: "cancel",
+          target,
+          runId: resolved.entry.runId,
+          sessionKey: resolved.entry.childSessionKey,
+          label: resolveRunLabel(resolved.entry),
+          cascadeCancelled: cascade.cancelled,
+          cascadeLabels: cascade.cancelled > 0 ? cascade.labels : undefined,
+          text: requested
+            ? `cancellation requested for ${resolveRunLabel(resolved.entry)}${cascadeText}.`
+            : `cancellation requested for ${cascade.cancelled} descendant${cascade.cancelled === 1 ? "" : "s"} of ${resolveRunLabel(resolved.entry)}.`,
         });
       }
       if (action === "steer") {

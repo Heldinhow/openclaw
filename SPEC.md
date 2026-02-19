@@ -1,181 +1,120 @@
-# SPEC.md - Retry Policies Feature
+# SPEC.md - Context Sharing Feature
 
 ## Problem Statement
 
-Currently, when a sub-agent fails, there's no built-in way to automatically retry the execution. The Retry Policies feature enables automatic retry with configurable backoff strategies when a sub-agent fails.
+Currently, when spawning multiple sub-agents (either in parallel or chained via `chainAfter`/`dependsOn`), there is no built-in way to share state between them. Sub-agents run in isolation with no access to shared context or data produced by sibling/parent sub-agents. The Context Sharing feature enables passing and accessing shared state between sub-agents.
 
 ## Desired Behavior
 
 ### Core Requirements
 
-1. **Retry count parameter**
-   - Add `retryCount: number` to specify how many times to retry on failure
-   - Default: 0 (no retries)
+1. **sharedContext parameter in sessions_spawn**
+   - Add `sharedContext` as an optional object parameter
+   - Can contain any serializable key-value pairs
+   - Available to the spawned sub-agent as part of its context
 
-2. **Retry delay parameter**
-   - Add `retryDelay: number` - fixed delay between retries in milliseconds
-   - Default: 1000ms
+2. **Context storage and retrieval**
+   - Store shared context in the subagent registry
+   - Sub-agents can access shared context via tool or system prompt injection
+   - Context is accessible to all sub-agents in the same "family" (same parent session)
 
-3. **Backoff strategy parameter**
-   - Add `retryBackoff: "fixed" | "exponential" | "linear"`
-   - `"fixed"`: same delay between retries
-   - `"exponential"`: delay doubles each retry (default)
-   - `"linear"`: delay increases linearly
-
-4. **Retry on specific errors**
-   - Add `retryOn?: string[]` - list of error patterns to retry on
-   - If not specified, retry on any error
-
-5. **Max retry time**
-   - Add `retryMaxTime?: number` - max total time for retries in ms
-   - Useful to prevent infinite retries
-
-### Proposed API
+3. **API Usage**
 
 ```typescript
-// Basic retry - retry up to 3 times with exponential backoff
+// Spawn with shared context
 sessions_spawn({
-  task: "task that might fail",
-  retryCount: 3,
+  task: "Research the best AI frameworks",
+  label: "researcher",
+  sharedContext: {
+    projectGoal: "Build a modern web app",
+    targetAudience: "Developers",
+    constraints: ["budget", "timeline"],
+  },
 });
 
-// Fixed delay retry - retry 2 times with 2 second delay
+// Later sub-agents can access previous context
 sessions_spawn({
-  task: "task that might fail",
-  retryCount: 2,
-  retryDelay: 2000,
-  retryBackoff: "fixed",
+  task: "Design the UI based on research",
+  label: "designer",
+  sharedContext: {
+    $research: "reference", // Special syntax to include previous result
+  },
 });
 
-// Linear backoff retry
+// Parallel with shared context
 sessions_spawn({
-  task: "task that might fail",
-  retryCount: 3,
-  retryDelay: 1000,
-  retryBackoff: "linear",
-});
-
-// Retry with max time limit
-sessions_spawn({
-  task: "task that might fail",
-  retryCount: 5,
-  retryDelay: 1000,
-  retryMaxTime: 30000, // max 30 seconds total
-});
-
-// Retry on specific errors only
-sessions_spawn({
-  task: "task that might fail",
-  retryCount: 2,
-  retryOn: ["rate limit", "timeout", "network error"],
+  task: ["Task A", "Task B", "Task C"],
+  parallel: true,
+  sharedContext: {
+    sharedData: "available to all",
+  },
 });
 ```
+
+4. **Context propagation**
+   - Child sub-agents inherit parent context by default
+   - Can explicitly override or extend parent context
+   - Context is read-only for child sub-agents (cannot modify parent's context)
 
 ## Implementation Plan
 
-### 1. Update SpawnSubagentParams Type
+### 1. Update SessionsSpawnToolSchema
 
-Add new fields:
-
-- `retryCount?: number` - max number of retries
-- `retryDelay?: number` - delay between retries in ms (default: 1000)
-- `retryBackoff?: "fixed" | "exponential" | "linear"` - backoff strategy (default: "exponential")
-- `retryOn?: string[]` - error patterns to retry on
-- `retryMaxTime?: number` - max total time for retries in ms
-
-### 2. Update sessions-spawn-tool.ts Schema
-
-Add:
-
-- `retryCount: Type.Optional(Type.Number({ minimum: 0 }))`
-- `retryDelay: Type.Optional(Type.Number({ minimum: 0 }))`
-- `retryBackoff: Type.Optional(Type.Union([Type.Literal("fixed"), Type.Literal("exponential"), Type.Literal("linear")]))`
-- `retryOn: Type.Optional(Type.Array(Type.String()))`
-- `retryMaxTime: Type.Optional(Type.Number({ minimum: 0 }))`
-
-### 3. Update subagent-spawn.ts
-
-- Modify spawnSubagentDirect to handle retry logic
-- Create helper function to calculate delay based on backoff strategy
-- Add retry loop with proper error handling
-- Check retryOn patterns to determine if error is retryable
-
-### 4. Retry Logic
+Add sharedContext parameter:
 
 ```typescript
-async function executeWithRetry(params, ctx) {
-  let lastError: Error | undefined;
-  const startTime = Date.now();
-
-  for (let attempt = 0; attempt <= retryCount; attempt++) {
-    try {
-      // Execute the subagent
-      return await spawnSubagentDirectOnce(params, ctx);
-    } catch (error) {
-      lastError = error;
-
-      // Check if we should retry
-      if (attempt < retryCount) {
-        // Check retryMaxTime
-        if (retryMaxTime && Date.now() - startTime >= retryMaxTime) {
-          break;
-        }
-
-        // Check if error matches retryOn patterns
-        if (retryOn && retryOn.length > 0) {
-          const errorStr = String(error).toLowerCase();
-          const shouldRetry = retryOn.some((pattern) => errorStr.includes(pattern.toLowerCase()));
-          if (!shouldRetry) {
-            break;
-          }
-        }
-
-        // Calculate delay based on backoff
-        const delay = calculateDelay(attempt, retryDelay, retryBackoff);
-        await sleep(delay);
-      }
-    }
-  }
-
-  // All retries failed
-  return { status: "error", error: lastError?.message };
-}
-
-function calculateDelay(attempt: number, baseDelay: number, backoff: string): number {
-  switch (backoff) {
-    case "fixed":
-      return baseDelay;
-    case "linear":
-      return baseDelay * (attempt + 1);
-    case "exponential":
-    default:
-      return baseDelay * Math.pow(2, attempt);
-  }
-}
+sharedContext: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
 ```
 
-### 5. Update subagent-registry.ts
+### 2. Update SpawnSubagentParams
 
-- Track retry attempts in the run registry
-- Add `retryCount` and `retryAttempt` to run info
+Add sharedContext to the params type:
+
+```typescript
+sharedContext?: Record<string, unknown>;
+```
+
+### 3. Update subagent-registry.ts
+
+Add context storage and retrieval:
+
+- `storeSharedContext(runId: string, context: Record<string, unknown>): void`
+- `getSharedContext(runId: string): Record<string, | unknown> | undefined`
+- `getParentSharedContext(requesterSessionKey: string): Record<string, unknown> | undefined`
+
+### 4. Update subagent-spawn.ts
+
+- Accept and process sharedContext parameter
+- Merge with parent context if available
+- Store context in registry
+- Inject context into sub-agent's system prompt
+
+### 5. Context injection in system prompt
+
+The shared context should be injected into the sub-agent's system prompt so it's aware of the shared state:
+
+```
+[Shared Context]:
+- projectGoal: "Build a modern web app"
+- targetAudience: "Developers"
+```
 
 ## Files to Modify
 
-| File                                      | Change                                |
-| ----------------------------------------- | ------------------------------------- |
-| `src/agents/subagent-spawn.ts`            | Add retry params type and retry logic |
-| `src/agents/tools/sessions-spawn-tool.ts` | Add retry params to schema            |
-| `src/agents/subagent-registry.ts`         | Track retry attempts in run info      |
+| File                                      | Change                                        |
+| ----------------------------------------- | --------------------------------------------- |
+| `src/agents/tools/sessions-spawn-tool.ts` | Add sharedContext to schema and pass to spawn |
+| `src/agents/subagent-spawn.ts`            | Add sharedContext param and store in registry |
+| `src/agents/subagent-registry.ts`         | Add context storage/retrieval functions       |
+| `src/agents/subagent-announce.ts`         | Inject context into system prompt             |
 
 ## Acceptance Criteria
 
-- [x] Can spawn sub-agent with `retryCount` parameter
-- [x] Sub-agent retries on failure up to retryCount times
-- [x] Retry delay works correctly (default exponential backoff)
-- [x] `retryBackoff: "fixed"` works correctly
-- [x] `retryBackoff: "linear"` works correctly
-- [x] `retryBackoff: "exponential"` works correctly
-- [x] `retryOn` filters which errors trigger retry
-- [x] `retryMaxTime` limits total retry time
-- [x] Backwards compatible (existing spawn works)
-- [x] Proper error reporting when all retries exhausted
+- [ ] Can pass sharedContext to sessions_spawn
+- [ ] Sub-agent receives sharedContext in its execution
+- [ ] Shared context is accessible via subagent-registry
+- [ ] Context is injected into sub-agent's system prompt
+- [ ] Works with parallel spawning (all sub-agents get same context)
+- [ ] Works with chained sub-agents (subsequent sub-agents can access prior results)
+- [ ] Parent context is inherited by child sub-agents
+- [ ] Backwards compatible (existing code works without sharedContext)

@@ -31,7 +31,7 @@ export type SubagentRunRecord = {
   archiveAtMs?: number;
   cleanupCompletedAt?: number;
   cleanupHandled?: boolean;
-  suppressAnnounceReason?: "steer-restart" | "killed";
+  suppressAnnounceReason?: "steer-restart" | "killed" | "cancelled";
   expectsCompletionMessage?: boolean;
   /** Number of times announce delivery has been attempted and returned false (deferred). */
   announceRetryCount?: number;
@@ -39,9 +39,15 @@ export type SubagentRunRecord = {
   lastAnnounceRetryAt?: number;
   /** Aggregation params for result aggregation feature */
   aggregation?: SpawnAggregationParams;
+  /** Whether cancellation has been requested for this sub-agent run. */
+  cancellationRequested?: boolean;
+  /** Timestamp when cancellation was requested. */
+  cancellationRequestedAt?: number;
 };
 
 const subagentRuns = new Map<string, SubagentRunRecord>();
+/** Shared context storage: runId -> shared context object */
+const sharedContexts = new Map<string, Record<string, unknown>>();
 let sweeper: NodeJS.Timeout | null = null;
 let listenerStarted = false;
 let listenerStop: (() => void) | null = null;
@@ -773,13 +779,47 @@ export function markSubagentRunTerminated(params: {
     entry.outcome = { status: "error", error: reason };
     entry.cleanupHandled = true;
     entry.cleanupCompletedAt = now;
-    entry.suppressAnnounceReason = "killed";
+    if (reason === "cancelled") {
+      entry.suppressAnnounceReason = "cancelled";
+    } else {
+      entry.suppressAnnounceReason = "killed";
+    }
     updated += 1;
   }
   if (updated > 0) {
     persistSubagentRuns();
   }
   return updated;
+}
+
+export function requestSubagentCancellation(runId: string): boolean {
+  const key = runId.trim();
+  if (!key) {
+    return false;
+  }
+  const entry = subagentRuns.get(key);
+  if (!entry) {
+    return false;
+  }
+  if (typeof entry.endedAt === "number") {
+    return false;
+  }
+  entry.cancellationRequested = true;
+  entry.cancellationRequestedAt = Date.now();
+  persistSubagentRuns();
+  return true;
+}
+
+export function isSubagentCancellationRequested(runId: string): boolean {
+  const key = runId.trim();
+  if (!key) {
+    return false;
+  }
+  const entry = subagentRuns.get(key);
+  if (!entry) {
+    return false;
+  }
+  return entry.cancellationRequested === true;
 }
 
 export function listSubagentRunsForRequester(requesterSessionKey: string): SubagentRunRecord[] {
@@ -933,4 +973,59 @@ export async function waitForSubagentRunCompletion(
     outcome: "timeout",
     error: `Timed out after ${timeoutMs}ms waiting for run ${key}`,
   };
+}
+
+/**
+ * Store shared context for a sub-agent run.
+ * This allows sharing state between sub-agents in the same "family".
+ */
+export function storeSharedContext(runId: string, context: Record<string, unknown>): void {
+  const key = runId.trim();
+  if (!key || !context) {
+    return;
+  }
+  sharedContexts.set(key, context);
+}
+
+/**
+ * Get shared context for a specific sub-agent run.
+ */
+export function getSharedContext(runId: string): Record<string, unknown> | undefined {
+  const key = runId.trim();
+  if (!key) {
+    return undefined;
+  }
+  return sharedContexts.get(key);
+}
+
+/**
+ * Get the parent's shared context for a given requester session key.
+ * This allows child sub-agents to inherit context from their parent.
+ */
+export function getParentSharedContext(
+  requesterSessionKey: string,
+): Record<string, unknown> | undefined {
+  const key = requesterSessionKey.trim();
+  if (!key) {
+    return undefined;
+  }
+
+  // Find the most recent run from this requester that has shared context
+  const runs = getRunsSnapshotForRead();
+  let parentRunId: string | undefined;
+  let latestCreatedAt = 0;
+
+  for (const [runId, entry] of runs.entries()) {
+    if (entry.requesterSessionKey === key && sharedContexts.has(runId)) {
+      if (entry.createdAt > latestCreatedAt) {
+        latestCreatedAt = entry.createdAt;
+        parentRunId = runId;
+      }
+    }
+  }
+
+  if (parentRunId) {
+    return sharedContexts.get(parentRunId);
+  }
+  return undefined;
 }

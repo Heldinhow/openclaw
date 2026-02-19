@@ -14,7 +14,9 @@ import { getSubagentDepthFromSessionStore } from "./subagent-depth.js";
 import {
   countActiveRunsForSession,
   getSubagentRunStatus,
+  getParentSharedContext,
   registerSubagentRun,
+  storeSharedContext,
   waitForSubagentRunCompletion,
 } from "./subagent-registry.js";
 import { readStringParam } from "./tools/common.js";
@@ -49,6 +51,8 @@ export type SpawnSubagentParams = {
   retryBackoff?: "fixed" | "exponential" | "linear";
   retryOn?: string[];
   retryMaxTime?: number;
+  // Context sharing parameter
+  sharedContext?: Record<string, unknown>;
 };
 
 export type SpawnSubagentContext = {
@@ -399,6 +403,17 @@ export async function spawnSubagentDirect(
       };
     }
   }
+  // Get parent shared context and merge with provided context
+  const parentSharedContext = getParentSharedContext(requesterInternalKey);
+  const providedSharedContext = params.sharedContext;
+  let mergedSharedContext: Record<string, unknown> | undefined;
+
+  if (parentSharedContext || providedSharedContext) {
+    mergedSharedContext = { ...parentSharedContext, ...providedSharedContext };
+  } else {
+    mergedSharedContext = providedSharedContext;
+  }
+
   const childSystemPrompt = buildSubagentSystemPrompt({
     requesterSessionKey,
     requesterOrigin,
@@ -407,6 +422,7 @@ export async function spawnSubagentDirect(
     task,
     childDepth,
     maxSpawnDepth,
+    sharedContext: mergedSharedContext,
   });
   const childTaskMessage = [
     `[Subagent Context] You are running as a subagent (depth ${childDepth}/${maxSpawnDepth}). Results auto-announce to your requester; do not busy-poll for status.`,
@@ -467,6 +483,11 @@ export async function spawnSubagentDirect(
     expectsCompletionMessage: params.expectsCompletionMessage === true,
     aggregation: params.aggregation,
   });
+
+  // Store shared context for this run (available to child sub-agents)
+  if (mergedSharedContext && Object.keys(mergedSharedContext).length > 0) {
+    storeSharedContext(childRunId, mergedSharedContext);
+  }
 
   if (params.aggregation) {
     createAggregationGroup(requesterInternalKey, params.aggregation);

@@ -44,6 +44,8 @@ const SessionsSpawnToolSchema = Type.Object({
   ),
   retryOn: Type.Optional(Type.Array(Type.String())),
   retryMaxTime: Type.Optional(Type.Number({ minimum: 0 })),
+  // Context sharing parameter
+  sharedContext: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
 });
 
 export function createSessionsSpawnTool(opts?: {
@@ -132,6 +134,12 @@ export function createSessionsSpawnTool(opts?: {
           ? Math.floor(params.retryMaxTime)
           : undefined;
 
+      // Shared context parameter
+      const sharedContext =
+        params.sharedContext && typeof params.sharedContext === "object"
+          ? (params.sharedContext as Record<string, unknown>)
+          : undefined;
+
       // Resolve dependency runId (chainAfter takes precedence, dependsOn is alias)
       const dependencyRunId = chainAfter || dependsOn;
 
@@ -193,6 +201,7 @@ export function createSessionsSpawnTool(opts?: {
             retryBackoff,
             retryOn,
             retryMaxTime,
+            sharedContext,
           },
           {
             agentSessionKey: opts?.agentSessionKey,
@@ -251,6 +260,7 @@ export function createSessionsSpawnTool(opts?: {
                 retryBackoff,
                 retryOn,
                 retryMaxTime,
+                sharedContext,
               },
               {
                 agentSessionKey: opts?.agentSessionKey,
