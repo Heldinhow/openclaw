@@ -614,6 +614,7 @@ export function buildSubagentSystemPrompt(params: {
   const maxSpawnDepth = typeof params.maxSpawnDepth === "number" ? params.maxSpawnDepth : 1;
   const canSpawn = childDepth < maxSpawnDepth;
   const parentLabel = childDepth >= 2 ? "parent orchestrator" : "main agent";
+  const hasSharedContext = params.sharedContext && Object.keys(params.sharedContext).length > 0;
 
   const lines = [
     "# Subagent Context",
@@ -681,6 +682,15 @@ export function buildSubagentSystemPrompt(params: {
     ].filter((line): line is string => line !== undefined),
     "",
   );
+  if (hasSharedContext) {
+    lines.push("");
+    lines.push("## Shared Context");
+    for (const [key, value] of Object.entries(params.sharedContext)) {
+      const valueStr = JSON.stringify(value);
+      lines.push("- " + key + ": " + valueStr);
+    }
+  }
+
   return lines.join("\n");
 }
 

@@ -37,6 +37,10 @@ export type SubagentRunRecord = {
   announceRetryCount?: number;
   /** Timestamp of the last announce retry attempt (for backoff). */
   lastAnnounceRetryAt?: number;
+  /** Whether cancellation has been requested for this sub-agent run. */
+  cancellationRequested?: boolean;
+  /** Timestamp when cancellation was requested. */
+  cancellationRequestedAt?: number;
   /** Aggregation params for result aggregation feature */
   aggregation?: SpawnAggregationParams;
   /** Whether cancellation has been requested for this sub-agent run. */
@@ -820,6 +824,78 @@ export function isSubagentCancellationRequested(runId: string): boolean {
     return false;
   }
   return entry.cancellationRequested === true;
+}
+
+export function requestSubagentCancellation(runId: string): boolean {
+  const key = runId.trim();
+  if (!key) {
+    return false;
+  }
+  const entry = subagentRuns.get(key);
+  if (!entry) {
+    return false;
+  }
+  if (typeof entry.endedAt === "number") {
+    return false;
+  }
+  entry.cancellationRequested = true;
+  entry.cancellationRequestedAt = Date.now();
+  persistSubagentRuns();
+  return true;
+}
+
+export function isSubagentCancellationRequested(runId: string): boolean {
+  const key = runId.trim();
+  if (!key) {
+    return false;
+  }
+  const entry = subagentRuns.get(key);
+  if (!entry) {
+    return false;
+  }
+  return entry.cancellationRequested === true;
+}
+
+export function storeSharedContext(runId: string, context: Record<string, unknown>): void {
+  const key = runId.trim();
+  if (!key || !context) {
+    return;
+  }
+  sharedContexts.set(key, context);
+}
+
+export function getSharedContext(runId: string): Record<string, unknown> | undefined {
+  const key = runId.trim();
+  if (!key) {
+    return undefined;
+  }
+  return sharedContexts.get(key);
+}
+
+export function getParentSharedContext(
+  requesterSessionKey: string,
+): Record<string, unknown> | undefined {
+  const key = requesterSessionKey.trim();
+  if (!key) {
+    return undefined;
+  }
+  const runs = getRunsSnapshotForRead();
+  let parentRunId: string | undefined;
+  let latestCreatedAt = 0;
+
+  for (const [runId, entry] of runs.entries()) {
+    if (entry.requesterSessionKey === key && sharedContexts.has(runId)) {
+      if (entry.createdAt > latestCreatedAt) {
+        latestCreatedAt = entry.createdAt;
+        parentRunId = runId;
+      }
+    }
+  }
+
+  if (parentRunId) {
+    return sharedContexts.get(parentRunId);
+  }
+  return undefined;
 }
 
 export function listSubagentRunsForRequester(requesterSessionKey: string): SubagentRunRecord[] {
