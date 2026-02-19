@@ -3,6 +3,8 @@ import { callGateway } from "../gateway/call.js";
 import { onAgentEvent } from "../infra/agent-events.js";
 import { defaultRuntime } from "../runtime.js";
 import { type DeliveryContext, normalizeDeliveryContext } from "../utils/delivery-context.js";
+import { handleSubagentResult } from "./aggregation/index.js";
+import type { SpawnAggregationParams } from "./aggregation/types.js";
 import { resetAnnounceQueuesForTests } from "./subagent-announce-queue.js";
 import { runSubagentAnnounceFlow, type SubagentRunOutcome } from "./subagent-announce.js";
 import {
@@ -10,8 +12,6 @@ import {
   saveSubagentRegistryToDisk,
 } from "./subagent-registry.store.js";
 import { resolveAgentTimeoutMs } from "./timeout.js";
-import type { SpawnAggregationParams } from "./aggregation/types.js";
-import { handleSubagentResult } from "./aggregation/index.js";
 
 export type SubagentRunRecord = {
   runId: string;
@@ -98,17 +98,19 @@ function startSubagentAnnounceCleanupFlow(runId: string, entry: SubagentRunRecor
   if (!beginSubagentCleanup(runId)) {
     return false;
   }
-  
+
   // Handle aggregation if this subagent is part of a group
   if (entry.aggregation) {
-    handleSubagentResult(
-      entry.requesterSessionKey,
-      runId,
-      entry.childSessionKey,
-      { status: entry.outcome?.status === "ok" ? "ok" : entry.outcome?.status === "error" ? "error" : "timeout" },
-    );
+    handleSubagentResult(entry.requesterSessionKey, runId, entry.childSessionKey, {
+      status:
+        entry.outcome?.status === "ok"
+          ? "ok"
+          : entry.outcome?.status === "error"
+            ? "error"
+            : "timeout",
+    });
   }
-  
+
   const requesterOrigin = normalizeDeliveryContext(entry.requesterOrigin);
   void runSubagentAnnounceFlow({
     childSessionKey: entry.childSessionKey,
@@ -606,11 +608,7 @@ async function waitForSubagentCompletion(runId: string, waitTimeoutMs: number) {
     }
     const waitError = typeof wait.error === "string" ? wait.error : undefined;
     const outcomeStatus: "ok" | "error" | "timeout" =
-      wait.status === "error"
-        ? "error"
-        : wait.status === "timeout"
-          ? "timeout"
-          : "ok";
+      wait.status === "error" ? "error" : wait.status === "timeout" ? "timeout" : "ok";
     entry.outcome =
       wait.status === "error"
         ? { status: "error", error: waitError }
@@ -619,12 +617,10 @@ async function waitForSubagentCompletion(runId: string, waitTimeoutMs: number) {
           : { status: "ok" };
     mutated = true;
     if (entry.aggregation) {
-      handleSubagentResult(
-        entry.requesterSessionKey,
-        runId,
-        entry.childSessionKey,
-        { status: outcomeStatus, error: waitError },
-      );
+      handleSubagentResult(entry.requesterSessionKey, runId, entry.childSessionKey, {
+        status: outcomeStatus,
+        error: waitError,
+      });
     }
     if (mutated) {
       persistSubagentRuns();
@@ -876,4 +872,65 @@ export function listDescendantRunsForRequester(rootSessionKey: string): Subagent
 
 export function initSubagentRegistry() {
   restoreSubagentRunsOnce();
+}
+
+export type SubagentRunStatus = {
+  exists: boolean;
+  completed: boolean;
+  outcome?: "ok" | "error" | "timeout" | "unknown";
+  error?: string;
+  childSessionKey?: string;
+  endedAt?: number;
+};
+
+export function getSubagentRunStatus(runId: string): SubagentRunStatus {
+  const key = runId.trim();
+  if (!key) {
+    return { exists: false, completed: false };
+  }
+  const entry = subagentRuns.get(key);
+  if (!entry) {
+    return { exists: false, completed: false };
+  }
+  const hasEnded = typeof entry.endedAt === "number";
+  return {
+    exists: true,
+    completed: hasEnded,
+    outcome: entry.outcome?.status,
+    error: entry.outcome?.error,
+    childSessionKey: entry.childSessionKey,
+    endedAt: entry.endedAt,
+  };
+}
+
+const DEFAULT_CHAIN_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+
+export async function waitForSubagentRunCompletion(
+  runId: string,
+  timeoutMs: number = DEFAULT_CHAIN_TIMEOUT_MS,
+): Promise<SubagentRunStatus> {
+  const key = runId.trim();
+  if (!key) {
+    return { exists: false, completed: false };
+  }
+
+  const startTime = Date.now();
+
+  // Poll for completion
+  while (Date.now() - startTime < timeoutMs) {
+    const status = getSubagentRunStatus(key);
+    if (status.completed || !status.exists) {
+      return status;
+    }
+    // Wait 500ms before checking again
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+
+  // Timeout reached
+  return {
+    exists: true,
+    completed: false,
+    outcome: "timeout",
+    error: `Timed out after ${timeoutMs}ms waiting for run ${key}`,
+  };
 }

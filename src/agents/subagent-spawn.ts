@@ -11,7 +11,12 @@ import { AGENT_LANE_SUBAGENT } from "./lanes.js";
 import { resolveSubagentSpawnModelSelection } from "./model-selection.js";
 import { buildSubagentSystemPrompt } from "./subagent-announce.js";
 import { getSubagentDepthFromSessionStore } from "./subagent-depth.js";
-import { countActiveRunsForSession, registerSubagentRun } from "./subagent-registry.js";
+import {
+  countActiveRunsForSession,
+  getSubagentRunStatus,
+  registerSubagentRun,
+  waitForSubagentRunCompletion,
+} from "./subagent-registry.js";
 import { readStringParam } from "./tools/common.js";
 import {
   resolveDisplaySessionKey,
@@ -34,6 +39,10 @@ export type SpawnSubagentParams = {
   count?: number;
   concurrent?: number;
   tasks?: string[];
+  // Chain/dependency parameters
+  chainAfter?: string;
+  dependsOn?: string;
+  includeDependencyResult?: boolean;
 };
 
 export type SpawnSubagentContext = {
@@ -79,7 +88,7 @@ export async function spawnSubagentDirect(
   params: SpawnSubagentParams,
   ctx: SpawnSubagentContext,
 ): Promise<SpawnSubagentResult> {
-  const task = params.task;
+  let task = params.task;
   const label = params.label?.trim() || "";
   const requestedAgentId = params.agentId;
   const modelOverride = params.model;
@@ -130,6 +139,79 @@ export async function spawnSubagentDirect(
       status: "forbidden",
       error: `sessions_spawn has reached max active children for this session (${activeChildren}/${maxChildren})`,
     };
+  }
+
+  // Handle chainAfter/dependsOn - wait for dependency to complete
+  const dependencyRunId = params.chainAfter || params.dependsOn;
+  let dependencyResult: string | undefined;
+  if (dependencyRunId) {
+    const dependencyStatus = getSubagentRunStatus(dependencyRunId);
+
+    // If dependency run doesn't exist, fail
+    if (!dependencyStatus.exists) {
+      return {
+        status: "error",
+        error: `Dependency run not found: ${dependencyRunId}`,
+      };
+    }
+
+    // If dependency hasn't completed yet, wait for it
+    if (!dependencyStatus.completed) {
+      const waitResult = await waitForSubagentRunCompletion(dependencyRunId);
+
+      if (!waitResult.completed) {
+        return {
+          status: "error",
+          error: waitResult.error || `Dependency run ${dependencyRunId} did not complete`,
+        };
+      }
+
+      // Check if dependency failed
+      if (waitResult.outcome === "error" || waitResult.outcome === "timeout") {
+        return {
+          status: "error",
+          error: `Dependency run ${dependencyRunId} ${waitResult.outcome}: ${waitResult.error || "unknown error"}`,
+        };
+      }
+    } else if (dependencyStatus.outcome === "error" || dependencyStatus.outcome === "timeout") {
+      return {
+        status: "error",
+        error: `Dependency run ${dependencyRunId} ${dependencyStatus.outcome}: ${dependencyStatus.error || "unknown error"}`,
+      };
+    }
+
+    // Get the dependency result if requested
+    if (params.includeDependencyResult && dependencyStatus.childSessionKey) {
+      try {
+        const historyResponse = await callGateway<{
+          messages: Array<{ role: string; content: string }>;
+        }>({
+          method: "sessions.history",
+          params: {
+            sessionKey: dependencyStatus.childSessionKey,
+            limit: 10,
+          },
+          timeoutMs: 10_000,
+        });
+
+        if (historyResponse?.messages && historyResponse.messages.length > 0) {
+          // Get the last assistant message as the result
+          const assistantMessages = historyResponse.messages
+            .filter((m) => m.role === "assistant")
+            .toReversed();
+          if (assistantMessages.length > 0) {
+            dependencyResult = assistantMessages[0].content;
+          }
+        }
+      } catch {
+        // Ignore errors getting history - continue without dependency result
+      }
+    }
+  }
+
+  // Prepend dependency result to task if requested
+  if (dependencyResult) {
+    task = `[Previous step result]:\n${dependencyResult}\n\n[Current task]:\n${task}`;
   }
 
   const requesterAgentId = normalizeAgentId(

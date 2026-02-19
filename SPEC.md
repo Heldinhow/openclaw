@@ -1,53 +1,59 @@
-# SPEC.md - Parallel Spawn Feature
+# SPEC.md - Pipeline/Chained Feature
 
 ## Problem Statement
 
-Currently, spawning multiple sub-agents requires making multiple sequential `sessions_spawn` calls. This is inefficient when sub-agents can run independently. The Parallel Spawn feature allows spawning multiple sub-agents simultaneously in a single call.
+Currently, sub-agents run independently after spawning. There's no built-in way to create dependencies between sub-agents where one waits for another to complete before starting. The Pipeline/Chained feature enables sequential execution where Sub-agent B waits for Sub-agent A to complete.
 
 ## Desired Behavior
 
 ### Core Requirements
 
-1. **Parallel execution flag**
-   - Add `parallel: true` to spawn multiple sub-agents simultaneously
-   - Add `concurrent: number` as alternative (specifies max concurrent agents)
+1. **Chain dependency parameter**
+   - Add `chainAfter: runId` to make sub-agent wait for a previous run to complete
+   - Add `dependsOn: runId` as alias (same functionality)
 
-2. **Task array support**
-   - When `parallel: true`, `task` can be either:
-     - A single string (spawns multiple with same task)
-     - An array of strings (each task spawns a separate sub-agent)
+2. **Dependency resolution**
+   - Sub-agent B should not start until Sub-agent A completes
+   - Should handle success and failure states appropriately
+   - Should timeout if dependency takes too long
 
-3. **Parallel result handling**
-   - Each sub-agent runs independently
-   - Results can be collected via `collectInto` (existing feature)
-   - Summary of all parallel runs returned to parent
+3. **Chaining multiple agents**
+   - Can chain multiple sub-agents in sequence (A → B → C)
+   - Each waits for previous to complete
+   - Results from previous can be passed to next
 
-4. **Concurrency control**
-   - `concurrent: 3` limits to 3 simultaneous agents
-   - When limits exceeded, queue and start as slots free up
+4. **Error propagation**
+   - If dependency fails, should handle gracefully
+   - Option to continue or abort on failure
 
 ### Proposed API
 
 ```typescript
-// Spawn 3 sub-agents in parallel (same task)
+// Spawn first agent
 sessions_spawn({
-  task: "research topic X",
-  parallel: true,
-  count: 3,
-  collectInto: "$research",
+  task: "task A",
+  label: "agent-a",
 });
 
-// Spawn different tasks in parallel
+// Returns { runId: "run-abc-123", childSessionKey: "..." }
+
+// Chain second agent after first completes
 sessions_spawn({
-  task: ["task 1", "task 2", "task 3"],
-  parallel: true,
-  collectInto: "$results",
+  task: "task B",
+  chainAfter: "run-abc-123", // wait for run-abc-123 to complete
 });
 
-// Limited concurrency
+// Or use dependsOn (alias)
 sessions_spawn({
-  task: ["task 1", "task 2", "task 3", "task 4", "task 5"],
-  concurrent: 2, // max 2 at a time
+  task: "task C",
+  dependsOn: "run-abc-123",
+});
+
+// Chain with result passing
+sessions_spawn({
+  task: "task C",
+  chainAfter: "run-abc-123",
+  includeDependencyResult: true, // pass result from previous run
 });
 ```
 
@@ -57,44 +63,42 @@ sessions_spawn({
 
 Add new fields:
 
-- `parallel?: boolean` - enable parallel execution
-- `count?: number` - number of agents to spawn (default: task array length or 1)
-- `concurrent?: number` - max concurrent agents (default: unlimited)
+- `chainAfter?: string` - runId to wait for
+- `dependsOn?: string` - alias for chainAfter
+- `includeDependencyResult?: boolean` - include previous result in context
 
 ### 2. Update sessions-spawn-tool.ts Schema
 
 Add:
 
-- `parallel: Type.Optional(Type.Boolean())`
-- `count: Type.Optional(Type.Number({ minimum: 1 }))`
-- `concurrent: Type.Optional(Type.Number({ minimum: 1 }))`
+- `chainAfter: Type.Optional(Type.String())`
+- `dependsOn: Type.Optional(Type.String())`
+- `includeDependencyResult: Type.Optional(Type.Boolean())`
 
 ### 3. Update subagent-spawn.ts
 
-- Modify `spawnSubagentDirect` to handle parallel spawning
-- When parallel is true and task is array or count > 1:
-  - Loop and spawn multiple sub-agents
-  - Respect concurrent limit
-  - Return array of results
+- Add function to check if a run has completed
+- Add function to wait for a run to complete
+- Modify `spawnSubagentDirect` to handle chainAfter
 
-### 4. Update aggregation integration
+### 4. Create run dependency tracking
 
-- Leverage existing `collectInto` feature
-- Each parallel sub-agent contributes to same collection
+- Need to track run states (pending, running, completed, failed)
+- Use session info to determine if run finished
 
 ## Files to Modify
 
-| File                                      | Change                                |
-| ----------------------------------------- | ------------------------------------- |
-| `src/agents/subagent-spawn.ts`            | Add parallel params to type and logic |
-| `src/agents/tools/sessions-spawn-tool.ts` | Add params to schema                  |
+| File                                      | Change                             |
+| ----------------------------------------- | ---------------------------------- |
+| `src/agents/subagent-spawn.ts`            | Add chain params to type and logic |
+| `src/agents/tools/sessions-spawn-tool.ts` | Add params to schema               |
 
 ## Acceptance Criteria
 
-- [ ] Can spawn multiple sub-agents with `parallel: true`
-- [ ] `count` parameter controls number of agents
-- [ ] `concurrent` limits simultaneous agents
-- [ ] Array of tasks spawns separate sub-agents
-- [ ] Results can be collected via `collectInto`
-- [ ] Backwards compatible (existing single spawn works)
-- [ ] Proper error handling for invalid parameters
+- [ ] Can spawn sub-agent that waits for another via `chainAfter`
+- [ ] `dependsOn` works as alias for `chainAfter`
+- [ ] Sub-agent starts only after dependency completes
+- [ ] Can chain multiple agents in sequence
+- [ ] Proper error handling when dependency fails
+- [ ] Backwards compatible (existing spawn works)
+- [ ] Timeout handling for long-running dependencies

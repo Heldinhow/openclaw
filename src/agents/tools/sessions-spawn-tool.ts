@@ -32,6 +32,10 @@ const SessionsSpawnToolSchema = Type.Object({
   parallel: Type.Optional(Type.Boolean()),
   count: Type.Optional(Type.Number({ minimum: 1 })),
   concurrent: Type.Optional(Type.Number({ minimum: 1 })),
+  // Chain/dependency parameters
+  chainAfter: Type.Optional(Type.String()),
+  dependsOn: Type.Optional(Type.String()),
+  includeDependencyResult: Type.Optional(Type.Boolean()),
 });
 
 export function createSessionsSpawnTool(opts?: {
@@ -94,6 +98,14 @@ export function createSessionsSpawnTool(opts?: {
       const concurrent =
         typeof params.concurrent === "number" && params.concurrent > 0 ? params.concurrent : 0;
 
+      // Chain/dependency parameters
+      const chainAfter = readStringParam(params, "chainAfter");
+      const dependsOn = readStringParam(params, "dependsOn");
+      const includeDependencyResult = params.includeDependencyResult === true;
+
+      // Resolve dependency runId (chainAfter takes precedence, dependsOn is alias)
+      const dependencyRunId = chainAfter || dependsOn;
+
       // Validate collectInto if provided
       if (collectInto !== undefined && !collectInto.startsWith("$")) {
         return jsonResult({
@@ -145,6 +157,8 @@ export function createSessionsSpawnTool(opts?: {
                     customFunction,
                   }
                 : undefined,
+            chainAfter: dependencyRunId,
+            includeDependencyResult,
           },
           {
             agentSessionKey: opts?.agentSessionKey,
@@ -196,6 +210,8 @@ export function createSessionsSpawnTool(opts?: {
                         customFunction,
                       }
                     : undefined,
+                chainAfter: dependencyRunId,
+                includeDependencyResult,
               },
               {
                 agentSessionKey: opts?.agentSessionKey,
