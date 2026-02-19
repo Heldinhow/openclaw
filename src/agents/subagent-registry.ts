@@ -43,10 +43,6 @@ export type SubagentRunRecord = {
   cancellationRequestedAt?: number;
   /** Aggregation params for result aggregation feature */
   aggregation?: SpawnAggregationParams;
-  /** Whether cancellation has been requested for this sub-agent run. */
-  cancellationRequested?: boolean;
-  /** Timestamp when cancellation was requested. */
-  cancellationRequestedAt?: number;
 };
 
 const subagentRuns = new Map<string, SubagentRunRecord>();
@@ -826,52 +822,6 @@ export function isSubagentCancellationRequested(runId: string): boolean {
   return entry.cancellationRequested === true;
 }
 
-export function requestSubagentCancellation(runId: string): boolean {
-  const key = runId.trim();
-  if (!key) {
-    return false;
-  }
-  const entry = subagentRuns.get(key);
-  if (!entry) {
-    return false;
-  }
-  if (typeof entry.endedAt === "number") {
-    return false;
-  }
-  entry.cancellationRequested = true;
-  entry.cancellationRequestedAt = Date.now();
-  persistSubagentRuns();
-  return true;
-}
-
-export function isSubagentCancellationRequested(runId: string): boolean {
-  const key = runId.trim();
-  if (!key) {
-    return false;
-  }
-  const entry = subagentRuns.get(key);
-  if (!entry) {
-    return false;
-  }
-  return entry.cancellationRequested === true;
-}
-
-export function storeSharedContext(runId: string, context: Record<string, unknown>): void {
-  const key = runId.trim();
-  if (!key || !context) {
-    return;
-  }
-  sharedContexts.set(key, context);
-}
-
-export function getSharedContext(runId: string): Record<string, unknown> | undefined {
-  const key = runId.trim();
-  if (!key) {
-    return undefined;
-  }
-  return sharedContexts.get(key);
-}
-
 export function getParentSharedContext(
   requesterSessionKey: string,
 ): Record<string, unknown> | undefined {
@@ -896,6 +846,32 @@ export function getParentSharedContext(
     return sharedContexts.get(parentRunId);
   }
   return undefined;
+}
+
+/**
+ * Store shared context for a subagent run.
+ * @param runId - The run ID to associate the context with
+ * @param context - The shared context object to store
+ */
+export function storeSharedContext(runId: string, context: Record<string, unknown>): void {
+  const key = runId.trim();
+  if (!key || !context) {
+    return;
+  }
+  sharedContexts.set(key, context);
+}
+
+/**
+ * Get shared context for a specific subagent run.
+ * @param runId - The run ID to retrieve context for
+ * @returns The shared context object or undefined if not found
+ */
+export function getSharedContext(runId: string): Record<string, unknown> | undefined {
+  const key = runId.trim();
+  if (!key) {
+    return undefined;
+  }
+  return sharedContexts.get(key);
 }
 
 export function listSubagentRunsForRequester(requesterSessionKey: string): SubagentRunRecord[] {
@@ -1049,59 +1025,4 @@ export async function waitForSubagentRunCompletion(
     outcome: "timeout",
     error: `Timed out after ${timeoutMs}ms waiting for run ${key}`,
   };
-}
-
-/**
- * Store shared context for a sub-agent run.
- * This allows sharing state between sub-agents in the same "family".
- */
-export function storeSharedContext(runId: string, context: Record<string, unknown>): void {
-  const key = runId.trim();
-  if (!key || !context) {
-    return;
-  }
-  sharedContexts.set(key, context);
-}
-
-/**
- * Get shared context for a specific sub-agent run.
- */
-export function getSharedContext(runId: string): Record<string, unknown> | undefined {
-  const key = runId.trim();
-  if (!key) {
-    return undefined;
-  }
-  return sharedContexts.get(key);
-}
-
-/**
- * Get the parent's shared context for a given requester session key.
- * This allows child sub-agents to inherit context from their parent.
- */
-export function getParentSharedContext(
-  requesterSessionKey: string,
-): Record<string, unknown> | undefined {
-  const key = requesterSessionKey.trim();
-  if (!key) {
-    return undefined;
-  }
-
-  // Find the most recent run from this requester that has shared context
-  const runs = getRunsSnapshotForRead();
-  let parentRunId: string | undefined;
-  let latestCreatedAt = 0;
-
-  for (const [runId, entry] of runs.entries()) {
-    if (entry.requesterSessionKey === key && sharedContexts.has(runId)) {
-      if (entry.createdAt > latestCreatedAt) {
-        latestCreatedAt = entry.createdAt;
-        parentRunId = runId;
-      }
-    }
-  }
-
-  if (parentRunId) {
-    return sharedContexts.get(parentRunId);
-  }
-  return undefined;
 }
