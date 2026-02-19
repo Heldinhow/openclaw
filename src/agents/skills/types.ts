@@ -87,3 +87,63 @@ export type SkillSnapshot = {
   resolvedSkills?: Skill[];
   version?: number;
 };
+
+// ============================================================================
+// Skill Injection System Types (NEW)
+// ============================================================================
+
+export type OutputContract = {
+  type: string;
+  schema?: Record<string, unknown>;
+};
+
+export type CompatibilityRule = {
+  type: "requires" | "incompatible";
+  skill: string;
+  reason?: string;
+};
+
+export type ComposabilityRule = {
+  type: "requires" | "forbids";
+  skill: string;
+  reason?: string;
+};
+
+export interface SkillDefinition {
+  name: string;
+  description: string;
+  version?: string;
+  allowed_tools: string[];
+  forbidden_tools?: string[];
+  execution_protocol: string[];
+  preconditions?: string[];
+  postconditions?: string[];
+  output_contract?: OutputContract;
+  compatibility_rules?: CompatibilityRule[];
+  composability_rules?: ComposabilityRule[];
+}
+
+export interface ComposedSkill {
+  skills: string[];
+  allowed_tools: string[];
+  forbidden_tools: string[];
+  execution_protocol: string[];
+}
+
+export interface ValidationError {
+  code: string;
+  message: string;
+  skill?: string;
+}
+
+export interface ValidationResult {
+  valid: boolean;
+  errors: ValidationError[];
+  warnings: string[];
+}
+
+export interface SkillSelectionContext {
+  taskDescription: string;
+  riskLevel: "low" | "medium" | "high";
+  coding: boolean;
+}

@@ -9,6 +9,7 @@ import { createAggregationGroup, addSubAgentToGroup } from "./aggregation/index.
 import type { SpawnAggregationParams } from "./aggregation/types.js";
 import { AGENT_LANE_SUBAGENT } from "./lanes.js";
 import { resolveSubagentSpawnModelSelection } from "./model-selection.js";
+import { SkillRegistry, codingSkills } from "./skills/index.js";
 import { buildSubagentSystemPrompt } from "./subagent-announce.js";
 import { getSubagentDepthFromSessionStore } from "./subagent-depth.js";
 import {
@@ -51,8 +52,8 @@ export type SpawnSubagentParams = {
   retryBackoff?: "fixed" | "exponential" | "linear";
   retryOn?: string[];
   retryMaxTime?: number;
-  // Context sharing parameter
   sharedContext?: Record<string, unknown>;
+  skills?: string[];
 };
 
 export type SpawnSubagentContext = {
@@ -195,6 +196,28 @@ export async function spawnSubagentDirect(
       ? Math.max(0, Math.floor(params.runTimeoutSeconds))
       : 0;
   let modelApplied = false;
+
+  // ==========================================================================
+  // Skill Validation and Composition
+  // ==========================================================================
+  let composedSkills: ReturnType<SkillRegistry["composeSkills"]> | undefined;
+  if (params.skills && params.skills.length > 0) {
+    // Create registry and register built-in coding skills
+    const registry = new SkillRegistry();
+    codingSkills.forEach((skill) => registry.registerSkill(skill));
+
+    // Validate skill set
+    const validation = registry.validateSkillSet(params.skills);
+    if (!validation.valid) {
+      return {
+        status: "error",
+        error: `Skill validation failed: ${validation.errors.map((e) => e.message).join("; ")}`,
+      };
+    }
+
+    // Compose skills to get allowed/forbidden tools
+    composedSkills = registry.composeSkills(params.skills);
+  }
 
   const cfg = loadConfig();
   const { mainKey, alias } = resolveMainSessionAlias(cfg);
@@ -417,16 +440,46 @@ export async function spawnSubagentDirect(
     mergedSharedContext = providedSharedContext;
   }
 
-  const childSystemPrompt = buildSubagentSystemPrompt({
-    requesterSessionKey,
-    requesterOrigin,
-    childSessionKey,
-    label: label || undefined,
-    task,
-    childDepth,
-    maxSpawnDepth,
-    sharedContext: mergedSharedContext,
-  });
+  // Build skills info for system prompt
+  let skillsPrompt = "";
+  if (composedSkills && composedSkills.skills.length > 0) {
+    const allowedToolsList = composedSkills.allowed_tools.join(", ") || "none";
+    const forbiddenToolsList = composedSkills.forbidden_tools.join(", ") || "none";
+    const protocolList = composedSkills.execution_protocol.join("\n- ") || "none";
+
+    skillsPrompt = `
+## Injected Skills
+You have been granted the following skills for this task:
+
+**Skills:** ${composedSkills.skills.join(", ")}
+
+**Allowed Tools:** ${allowedToolsList}
+
+**Forbidden Tools:** ${forbiddenToolsList}
+
+**Execution Protocol:**
+- ${protocolList}
+
+**IMPORTANT:**
+- Only use tools from the "Allowed Tools" list
+- Never use tools from the "Forbidden Tools" list
+- Follow the execution protocol in order
+- If you need a tool not in allowed tools, you cannot use it
+`;
+  }
+
+  const childSystemPrompt =
+    buildSubagentSystemPrompt({
+      requesterSessionKey,
+      requesterOrigin,
+      childSessionKey,
+      label: label || undefined,
+      task,
+      childDepth,
+      maxSpawnDepth,
+      sharedContext: mergedSharedContext,
+    }) + skillsPrompt;
+
   const childTaskMessage = [
     `[Subagent Context] You are running as a subagent (depth ${childDepth}/${maxSpawnDepth}). Results auto-announce to your requester; do not busy-poll for status.`,
     `[Subagent Task]: ${task}`,
