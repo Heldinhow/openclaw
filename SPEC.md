@@ -1,179 +1,56 @@
-# SPEC.md - Sub-agent Pipeline/Chained Feature
+# Cancellation Feature Specification
 
-## Status: ✅ IMPLEMENTED
+## 1. Project Overview
 
-The Pipeline/Chained feature is already fully implemented in the codebase.
+**Feature:** Sub-agent Cancellation
+**Type:** Tool/Functionality
+**Core Functionality:** Allow cancellation of running sub-agents via a dedicated tool
+**Target Users:** Main session users who spawn sub-agents and need to cancel them
 
-## Implementation Details
+## 2. Functionality Specification
 
-### 1. Schema Parameters (sessions-spawn-tool.ts)
+### Core Features
 
-```typescript
-// Chain/dependency parameters
-chainAfter: Type.Optional(Type.String()),
-dependsOn: Type.Optional(Type.String()),
-includeDependencyResult: Type.Optional(Type.Boolean()),
-```
+1. **New Tool: `subagent_cancel`**
+   - Adds ability to cancel running sub-agents by their run ID
+   - Works with both spawned sessions and sub-agents
+   - Returns confirmation of cancellation
 
-### 2. Core Implementation (subagent-spawn.ts)
+2. **Tool Parameters:**
+   - `runId` (required): The ID of the sub-agent run to cancel
+   - Returns success/failure status
 
-The `spawnSubagentDirect` function handles:
+3. **Behavior:**
+   - Cancels the target sub-agent session
+   - Returns appropriate response to user
+   - Handles edge cases (already completed, non-existent run)
 
-- **Dependency check**: Verifies if the dependency run exists
-- **Wait for completion**: If dependency hasn't completed, waits for it
-- **Result retrieval**: If `includeDependencyResult=true`, retrieves the dependency's output
-- **Task injection**: Prepends dependency result to current task
+### Implementation Details
 
-### 3. Registry Functions (subagent-registry.ts)
+- Add to `sessions` tool group
+- Use existing session management infrastructure
+- Integrate with sub-agent session tracking
 
-- `getSubagentRunStatus(runId)` - Check run status
-- `waitForSubagentRunCompletion(runId, timeoutMs)` - Wait for run completion
-- `storeSharedContext(runId, context)` - Store context
-- `getSharedContext(runId)` - Retrieve context
+## 3. Acceptance Criteria
 
-## Usage Example
+- [x] `subagents` tool has `cancel` action available
+- [x] Can cancel a running sub-agent by run ID, label, index, or "last"
+- [x] Returns clear success/failure feedback
+- [x] Handles non-existent run IDs gracefully
+- [x] Works with the existing subagent tool suite
+- [x] Supports canceling all subagents with target="all"
+- [x] Cascades cancellation to child/descendant subagents
 
-```typescript
-// Chain: Sub-agent B waits for Sub-agent A to complete
-sessions_spawn({
-  task: "First task",
-  label: "step-1",
-});
+## 4. Implementation Notes
 
-// Get the runId from the result, then spawn chained
-sessions_spawn({
-  task: "Second task that depends on first",
-  chainAfter: "run-id-from-step-1",
-  includeDependencyResult: true, // Includes previous result in task
-});
-
-// Or use dependsOn as alias
-sessions_spawn({
-  task: "Task depending on another",
-  dependsOn: "other-run-id",
-});
-```
-
-## Acceptance Criteria
-
-- [x] Can specify chainAfter or dependsOn parameter
-- [x] Sub-agent waits for dependency to complete before starting
-- [x] Can include dependency result in task via includeDependencyResult
-- [x] Handles dependency errors appropriately
-- [x] Works with parallel spawning
-- [x] Backwards compatible (existing code works without chain parameters)
-
-## Desired Behavior
-
-### Core Requirements
-
-1. **sharedContext parameter in sessions_spawn**
-   - Add `sharedContext` as an optional object parameter
-   - Can contain any serializable key-value pairs
-   - Available to the spawned sub-agent as part of its context
-
-2. **Context storage and retrieval**
-   - Store shared context in the subagent registry
-   - Sub-agents can access shared context via tool or system prompt injection
-   - Context is accessible to all sub-agents in the same "family" (same parent session)
-
-3. **API Usage**
-
-```typescript
-// Spawn with shared context
-sessions_spawn({
-  task: "Research the best AI frameworks",
-  label: "researcher",
-  sharedContext: {
-    projectGoal: "Build a modern web app",
-    targetAudience: "Developers",
-    constraints: ["budget", "timeline"],
-  },
-});
-
-// Later sub-agents can access previous context
-sessions_spawn({
-  task: "Design the UI based on research",
-  label: "designer",
-  sharedContext: {
-    $research: "reference", // Special syntax to include previous result
-  },
-});
-
-// Parallel with shared context
-sessions_spawn({
-  task: ["Task A", "Task B", "Task C"],
-  parallel: true,
-  sharedContext: {
-    sharedData: "available to all",
-  },
-});
-```
-
-4. **Context propagation**
-   - Child sub-agents inherit parent context by default
-   - Can explicitly override or extend parent context
-   - Context is read-only for child sub-agents (cannot modify parent's context)
-
-## Implementation Plan
-
-### 1. Update SessionsSpawnToolSchema
-
-Add sharedContext parameter:
-
-```typescript
-sharedContext: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
-```
-
-### 2. Update SpawnSubagentParams
-
-Add sharedContext to the params type:
-
-```typescript
-sharedContext?: Record<string, unknown>;
-```
-
-### 3. Update subagent-registry.ts
-
-Add context storage and retrieval:
-
-- `storeSharedContext(runId: string, context: Record<string, unknown>): void`
-- `getSharedContext(runId: string): Record<string, | unknown> | undefined`
-- `getParentSharedContext(requesterSessionKey: string): Record<string, unknown> | undefined`
-
-### 4. Update subagent-spawn.ts
-
-- Accept and process sharedContext parameter
-- Merge with parent context if available
-- Store context in registry
-- Inject context into sub-agent's system prompt
-
-### 5. Context injection in system prompt
-
-The shared context should be injected into the sub-agent's system prompt so it's aware of the shared state:
+The cancellation feature is implemented via the `subagents` tool with action="cancel":
 
 ```
-[Shared Context]:
-- projectGoal: "Build a modern web app"
-- targetAudience: "Developers"
+subagents(action="cancel", target="<runId|label|index|last|all>")
 ```
 
-## Files to Modify
+Key functions:
 
-| File                                      | Change                                        |
-| ----------------------------------------- | --------------------------------------------- |
-| `src/agents/tools/sessions-spawn-tool.ts` | Add sharedContext to schema and pass to spawn |
-| `src/agents/subagent-spawn.ts`            | Add sharedContext param and store in registry |
-| `src/agents/subagent-registry.ts`         | Add context storage/retrieval functions       |
-| `src/agents/subagent-announce.ts`         | Inject context into system prompt             |
-
-## Acceptance Criteria
-
-- [ ] Can pass sharedContext to sessions_spawn
-- [ ] Sub-agent receives sharedContext in its execution
-- [ ] Shared context is accessible via subagent-registry
-- [ ] Context is injected into sub-agent's system prompt
-- [ ] Works with parallel spawning (all sub-agents get same context)
-- [ ] Works with chained sub-agents (subsequent sub-agents can access prior results)
-- [ ] Parent context is inherited by child sub-agents
-- [ ] Backwards compatible (existing code works without sharedContext)
+- `requestSubagentCancellation(runId)` - marks cancellation request in registry
+- `cascadeCancelChildren()` - recursively cancels child subagents
+- Full implementation in: `/src/agents/tools/subagents-tool.ts`
