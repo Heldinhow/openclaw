@@ -52,6 +52,7 @@ import {
   updateSkillEdit,
   updateSkillEnabled,
 } from "./controllers/skills.ts";
+import { refreshSubagents } from "./controllers/subagents.ts";
 import { icons } from "./icons.ts";
 import { normalizeBasePath, TAB_GROUPS, subtitleForTab, titleForTab } from "./navigation.ts";
 import { renderAgents } from "./views/agents.ts";
@@ -68,6 +69,7 @@ import { renderNodes } from "./views/nodes.ts";
 import { renderOverview } from "./views/overview.ts";
 import { renderSessions } from "./views/sessions.ts";
 import { renderSkills } from "./views/skills.ts";
+import { renderSubagents } from "./views/subagents.ts";
 
 const AVATAR_DATA_RE = /^data:/i;
 const AVATAR_HTTP_RE = /^https?:\/\//i;
@@ -333,6 +335,19 @@ export function renderApp(state: AppViewState) {
                 onRun: (job) => runCronJob(state, job),
                 onRemove: (job) => removeCronJob(state, job),
                 onLoadRuns: (jobId) => loadCronRuns(state, jobId),
+              })
+            : nothing
+        }
+
+        ${
+          state.tab === "subagents"
+            ? renderSubagents({
+                loading: state.subagentsLoading,
+                subagents: state.subagents,
+                error: state.subagentsError,
+                filter: state.subagentsFilter,
+                onRefresh: () => refreshSubagents(state),
+                onFilterChange: (filter) => (state.subagentsFilter = filter),
               })
             : nothing
         }

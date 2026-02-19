@@ -192,6 +192,10 @@ export type AppViewState = {
   cronRunsJobId: string | null;
   cronRuns: CronRunLogEntry[];
   cronBusy: boolean;
+  subagentsLoading: boolean;
+  subagents: import("./views/subagents.js").SubagentInfo[];
+  subagentsError: string | null;
+  subagentsFilter: "all" | "running" | "completed" | "failed";
   skillsLoading: boolean;
   skillsReport: SkillStatusReport | null;
   skillsError: string | null;

@@ -56,6 +56,10 @@ import type { DevicePairingList } from "./controllers/devices.ts";
 import type { ExecApprovalRequest } from "./controllers/exec-approval.ts";
 import type { ExecApprovalsFile, ExecApprovalsSnapshot } from "./controllers/exec-approvals.ts";
 import type { SkillMessage } from "./controllers/skills.ts";
+import {
+  loadSubagents as loadSubagentsInternal,
+  refreshSubagents as refreshSubagentsInternal,
+} from "./controllers/subagents.ts";
 import type { GatewayBrowserClient, GatewayHelloOk } from "./gateway.ts";
 import type { Tab } from "./navigation.ts";
 import { loadSettings, type UiSettings } from "./storage.ts";
@@ -81,6 +85,7 @@ import type {
 } from "./types.ts";
 import { type ChatAttachment, type ChatQueueItem, type CronFormState } from "./ui-types.ts";
 import type { NostrProfileFormState } from "./views/channels.nostr-profile-form.ts";
+import type { SubagentInfo } from "./views/subagents.ts";
 
 declare global {
   interface Window {
@@ -300,6 +305,11 @@ export class OpenClawApp extends LitElement {
   @state() cronRuns: CronRunLogEntry[] = [];
   @state() cronBusy = false;
 
+  @state() subagentsLoading = false;
+  @state() subagents: SubagentInfo[] = [];
+  @state() subagentsError: string | null = null;
+  @state() subagentsFilter: "all" | "running" | "completed" | "failed" = "all";
+
   @state() skillsLoading = false;
   @state() skillsReport: SkillStatusReport | null = null;
   @state() skillsError: string | null = null;
@@ -437,6 +447,14 @@ export class OpenClawApp extends LitElement {
 
   async loadCron() {
     await loadCronInternal(this as unknown as Parameters<typeof loadCronInternal>[0]);
+  }
+
+  async loadSubagents() {
+    await loadSubagentsInternal(this as unknown as Parameters<typeof loadSubagentsInternal>[0]);
+  }
+
+  refreshSubagents() {
+    refreshSubagentsInternal(this as unknown as Parameters<typeof refreshSubagentsInternal>[0]);
   }
 
   async handleAbortChat() {
