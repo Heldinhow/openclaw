@@ -682,7 +682,7 @@ export function buildSubagentSystemPrompt(params: {
     ].filter((line): line is string => line !== undefined),
     "",
   );
-  if (hasSharedContext) {
+  if (hasSharedContext && params.sharedContext) {
     lines.push("");
     lines.push("## Shared Context");
     for (const [key, value] of Object.entries(params.sharedContext)) {
