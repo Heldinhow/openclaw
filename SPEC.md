@@ -169,13 +169,13 @@ function calculateDelay(attempt: number, baseDelay: number, backoff: string): nu
 
 ## Acceptance Criteria
 
-- [ ] Can spawn sub-agent with `retryCount` parameter
-- [ ] Sub-agent retries on failure up to retryCount times
-- [ ] Retry delay works correctly (default exponential backoff)
-- [ ] `retryBackoff: "fixed"` works correctly
-- [ ] `retryBackoff: "linear"` works correctly
-- [ ] `retryBackoff: "exponential"` works correctly
-- [ ] `retryOn` filters which errors trigger retry
-- [ ] `retryMaxTime` limits total retry time
-- [ ] Backwards compatible (existing spawn works)
-- [ ] Proper error reporting when all retries exhausted
+- [x] Can spawn sub-agent with `retryCount` parameter
+- [x] Sub-agent retries on failure up to retryCount times
+- [x] Retry delay works correctly (default exponential backoff)
+- [x] `retryBackoff: "fixed"` works correctly
+- [x] `retryBackoff: "linear"` works correctly
+- [x] `retryBackoff: "exponential"` works correctly
+- [x] `retryOn` filters which errors trigger retry
+- [x] `retryMaxTime` limits total retry time
+- [x] Backwards compatible (existing spawn works)
+- [x] Proper error reporting when all retries exhausted
