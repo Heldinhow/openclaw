@@ -98,6 +98,17 @@ function startSubagentAnnounceCleanupFlow(runId: string, entry: SubagentRunRecor
   if (!beginSubagentCleanup(runId)) {
     return false;
   }
+  
+  // Handle aggregation if this subagent is part of a group
+  if (entry.aggregation) {
+    handleSubagentResult(
+      entry.requesterSessionKey,
+      runId,
+      entry.childSessionKey,
+      { status: entry.outcome?.status === "ok" ? "ok" : entry.outcome?.status === "error" ? "error" : "timeout" },
+    );
+  }
+  
   const requesterOrigin = normalizeDeliveryContext(entry.requesterOrigin);
   void runSubagentAnnounceFlow({
     childSessionKey: entry.childSessionKey,
