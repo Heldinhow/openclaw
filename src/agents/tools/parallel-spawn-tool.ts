@@ -189,47 +189,6 @@ function normalizeModelSelection(value: unknown): string | undefined {
   return undefined;
 }
 
-/**
- * Wait for a subagent run to complete
- */
-async function waitForRunCompletion(
-  runId: string,
-  timeoutMs = 300_000, // 5 minutes default
-  pollIntervalMs = 2000, // 2 seconds
-): Promise<{ status: "completed" | "error" | "timeout"; result?: unknown; error?: string }> {
-  const startTime = Date.now();
-
-  while (Date.now() - startTime < timeoutMs) {
-    try {
-      const response = await callGateway<{
-        status?: string;
-        result?: unknown;
-        error?: string;
-        state?: string;
-      }>({
-        method: "runs.get",
-        params: { runId },
-        timeoutMs: 10_000,
-      });
-
-      const status = response?.status ?? response?.state;
-      if (status === "completed" || status === "done" || status === "success") {
-        return { status: "completed", result: response?.result };
-      }
-      if (status === "error" || status === "failed") {
-        return { status: "error", error: response?.error as string };
-      }
-    } catch {
-      // Run might not exist yet, continue polling
-    }
-
-    // Wait before next poll
-    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-  }
-
-  return { status: "timeout", error: `Timeout waiting for run ${runId}` };
-}
-
 export function createParallelSpawnTool(opts?: {
   agentSessionKey?: string;
   agentChannel?: GatewayMessageChannel;
@@ -554,7 +513,8 @@ export function createParallelSpawnTool(opts?: {
 
       // Track results as they come in
       const results: TaskResult[] = Array.from({ length: tasks.length });
-      const completedRunIds = new Map<string, TaskResult>();
+      const spawnedRunIds = new Map<string, TaskResult>();
+      const spawnedLabels = new Set<string>();
 
       // Function to resolve chainAfter reference (label or runId)
       const resolveChainAfter = (chainRef: string): { runId: string; label?: string } | null => {
@@ -564,7 +524,7 @@ export function createParallelSpawnTool(opts?: {
           return { runId: labelEntry.runId, label: chainRef };
         }
         // Check if it's a run ID we already have
-        const existingResult = completedRunIds.get(chainRef);
+        const existingResult = spawnedRunIds.get(chainRef);
         if (existingResult?.runId) {
           return { runId: existingResult.runId, label: existingResult.label };
         }
@@ -588,17 +548,20 @@ export function createParallelSpawnTool(opts?: {
           const result = await spawnSingleTask(task, index);
           results[result.index] = result;
           if (result.runId) {
-            completedRunIds.set(result.runId, result);
+            spawnedRunIds.set(result.runId, result);
             // Update the label map with the runId
             const labelEntry = taskLabelMap.get(task.label);
             if (labelEntry) {
               labelEntry.runId = result.runId;
             }
+            // Mark as spawned
+            spawnedLabels.add(task.label);
           }
         }),
       );
 
       // Now process tasks with dependencies sequentially
+      // Each task waits for its dependency to be SPAWNED (not completed) before starting
       for (const { task, index } of tasksWithDeps) {
         if (!task.chainAfter) {
           continue;
@@ -625,32 +588,41 @@ export function createParallelSpawnTool(opts?: {
           continue;
         }
 
-        // Wait for the dependency to complete
-        if (dependencyRunId) {
-          const waitResult = await waitForRunCompletion(dependencyRunId, 300_000);
+        // Wait for the dependency to be SPAWNED (not completed)
+        // This is a simple check - we just need to wait until the dependency task has started
+        let dependencySpawned = spawnedLabels.has(dependencyLabel || "");
+        if (!dependencySpawned && dependencyRunId) {
+          dependencySpawned = spawnedRunIds.has(dependencyRunId);
+        }
 
-          // Check if we should skip due to dependency error
-          if (waitResult.status === "error") {
-            if (skipOnDependencyError) {
-              results[index] = {
-                index,
-                label: task.label,
-                task: task.task,
-                status: "skipped",
-                error: `Skipped due to failed dependency: ${dependencyLabel || dependencyRunId}`,
-              };
-              continue;
-            }
-            // If not skipping, continue to spawn the task anyway
-          }
+        if (!dependencySpawned) {
+          // Small delay to allow the dependency to be registered
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          dependencySpawned =
+            spawnedLabels.has(dependencyLabel || "") || spawnedRunIds.has(dependencyRunId || "");
+        }
 
-          if (waitResult.status === "timeout") {
+        if (!dependencySpawned) {
+          results[index] = {
+            index,
+            label: task.label,
+            task: task.task,
+            status: "error",
+            error: `chainAfter dependency "${chainRef}" was not spawned`,
+          };
+          continue;
+        }
+
+        // Check if we should skip due to dependency error
+        if (skipOnDependencyError && dependencyLabel) {
+          const depResult = results.find((r) => r.label === dependencyLabel);
+          if (depResult?.status === "error") {
             results[index] = {
               index,
               label: task.label,
               task: task.task,
-              status: "error",
-              error: waitResult.error,
+              status: "skipped",
+              error: `Skipped due to failed dependency: ${dependencyLabel}`,
             };
             continue;
           }
@@ -660,11 +632,13 @@ export function createParallelSpawnTool(opts?: {
         const result = await spawnSingleTask(task, index);
         results[result.index] = result;
         if (result.runId) {
-          completedRunIds.set(result.runId, result);
+          spawnedRunIds.set(result.runId, result);
           const labelEntry = taskLabelMap.get(task.label);
           if (labelEntry) {
             labelEntry.runId = result.runId;
           }
+          // Mark as spawned
+          spawnedLabels.add(task.label);
         }
       }
 
