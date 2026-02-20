@@ -9,7 +9,10 @@ import crypto from "node:crypto";
 import { Type } from "@sinclair/typebox";
 import { normalizeThinkLevel } from "../../auto-reply/thinking.js";
 import { loadConfig } from "../../config/config.js";
+import { resolveStorePath } from "../../config/sessions.js";
 import { callGateway } from "../../gateway/call.js";
+import { waitForAgentJob } from "../../gateway/server-methods/agent-job.js";
+import { readSessionMessages } from "../../gateway/session-utils.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
 import { normalizeDeliveryContext } from "../../utils/delivery-context.js";
 import type { GatewayMessageChannel } from "../../utils/message-channel.js";
@@ -29,6 +32,13 @@ import {
   resolveMainSessionAlias,
 } from "./sessions-helpers.js";
 
+// Retry backoff strategy
+const RetryBackoffSchema = Type.Union([
+  Type.Literal("fixed", { description: "Fixed delay between retries" }),
+  Type.Literal("linear", { description: "Linear increase: delay * attempt" }),
+  Type.Literal("exponential", { description: "Exponential: delay * 2^attempt" }),
+]);
+
 // Task definition for parallel execution
 const ParallelTaskSchema = Type.Object({
   task: Type.String({ description: "Task description for this subagent" }),
@@ -40,6 +50,32 @@ const ParallelTaskSchema = Type.Object({
   sharedKey: Type.Optional(Type.String({ description: "Shared context key for this task" })),
   chainAfter: Type.Optional(
     Type.String({ description: "Task label or run ID to wait for before starting this task" }),
+  ),
+  // Result capture options
+  waitForCompletion: Type.Optional(
+    Type.Boolean({ description: "Wait for subagent to complete before returning (default: true)" }),
+  ),
+  resultTimeoutMs: Type.Optional(
+    Type.Number({ minimum: 0, description: "Timeout in ms to wait for result (default: 300000)" }),
+  ),
+  // Retry options
+  retryCount: Type.Optional(
+    Type.Number({ minimum: 0, description: "Number of times to retry on failure (default: 0)" }),
+  ),
+  retryDelay: Type.Optional(
+    Type.Number({ minimum: 0, description: "Delay in ms between retries (default: 1000)" }),
+  ),
+  retryBackoff: Type.Optional(RetryBackoffSchema),
+  retryMaxTime: Type.Optional(
+    Type.Number({
+      minimum: 0,
+      description: "Maximum total time in ms to keep retrying (default: 30000)",
+    }),
+  ),
+  retryOn: Type.Optional(
+    Type.Array(Type.String(), {
+      description: "Array of error patterns to retry on (default: retry all errors)",
+    }),
   ),
 });
 
@@ -62,6 +98,16 @@ const ParallelSpawnToolSchema = Type.Object({
     Type.Boolean({
       description:
         "If true, tasks with chainAfter will skip if their dependency task fails. Default: false (task runs regardless)",
+    }),
+  ),
+  // Result capture options
+  waitForCompletion: Type.Optional(
+    Type.Boolean({ description: "Wait for all subagents to complete (default: true)" }),
+  ),
+  resultTimeoutMs: Type.Optional(
+    Type.Number({
+      minimum: 0,
+      description: "Default timeout for each task in ms (default: 300000)",
     }),
   ),
   // Aggregate results options
@@ -174,6 +220,39 @@ function _splitModelRef(ref?: string) {
   return { provider: undefined, model: trimmed };
 }
 
+/**
+ * Extract result from session transcript
+ */
+async function extractResultFromSession(
+  sessionId: string,
+  storePath: string | undefined,
+  sessionFile?: string,
+): Promise<{ result?: unknown; error?: string }> {
+  try {
+    const messages = readSessionMessages(sessionId, storePath, sessionFile);
+
+    // Find the last assistant message with actual content
+    const assistantMessages = messages.filter(
+      (m: unknown) =>
+        typeof m === "object" &&
+        m !== null &&
+        (m as { role?: unknown }).role === "assistant" &&
+        Array.isArray((m as { content?: unknown }).content) &&
+        ((m as { content: unknown[] }).content.length ?? 0) > 0,
+    );
+
+    if (assistantMessages.length === 0) {
+      return { error: "No assistant response found in session" };
+    }
+
+    const lastMessage = assistantMessages[assistantMessages.length - 1];
+    return { result: lastMessage };
+  } catch (err) {
+    const errorText = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to extract result: ${errorText}` };
+  }
+}
+
 function normalizeModelSelection(value: unknown): string | undefined {
   if (typeof value === "string") {
     const trimmed = value.trim();
@@ -231,6 +310,20 @@ export function createParallelSpawnTool(opts?: {
           contextSharing: taskObj.contextSharing as ContextSharingMode | undefined,
           sharedKey: typeof taskObj.sharedKey === "string" ? taskObj.sharedKey : undefined,
           chainAfter: typeof taskObj.chainAfter === "string" ? taskObj.chainAfter : undefined,
+          // Result capture options
+          waitForCompletion: taskObj.waitForCompletion !== false, // Default: true
+          resultTimeoutMs:
+            typeof taskObj.resultTimeoutMs === "number" && taskObj.resultTimeoutMs >= 0
+              ? taskObj.resultTimeoutMs
+              : 300_000, // Default: 5 minutes
+          // Retry options
+          retryCount: typeof taskObj.retryCount === "number" ? taskObj.retryCount : 0,
+          retryDelay: typeof taskObj.retryDelay === "number" ? taskObj.retryDelay : 1000,
+          retryBackoff: taskObj.retryBackoff as "fixed" | "linear" | "exponential" | undefined,
+          retryMaxTime: typeof taskObj.retryMaxTime === "number" ? taskObj.retryMaxTime : 30000,
+          retryOn: Array.isArray(taskObj.retryOn)
+            ? taskObj.retryOn.filter((e): e is string => typeof e === "string")
+            : undefined,
         };
       });
 
@@ -262,6 +355,23 @@ export function createParallelSpawnTool(opts?: {
       // Parse sharedKey and timeout
       const sharedKey = readStringParam(params, "sharedKey");
       const _timeoutSeconds = readNumberParam(params, "timeout");
+
+      // Parse tool-level result capture options (apply as defaults to tasks)
+      const toolLevelWaitForCompletion = params.waitForCompletion !== false; // Default: true
+      const toolLevelResultTimeoutMs =
+        typeof params.resultTimeoutMs === "number" && params.resultTimeoutMs >= 0
+          ? params.resultTimeoutMs
+          : 300_000;
+
+      // Apply tool-level defaults to tasks that don't specify them
+      for (const task of tasks) {
+        if (task.waitForCompletion === undefined) {
+          task.waitForCompletion = toolLevelWaitForCompletion;
+        }
+        if (task.resultTimeoutMs === undefined) {
+          task.resultTimeoutMs = toolLevelResultTimeoutMs;
+        }
+      }
 
       // Load config and resolve session info
       const cfg = loadConfig();
@@ -493,6 +603,99 @@ export function createParallelSpawnTool(opts?: {
           runTimeoutSeconds: 0,
         });
 
+        // Wait for completion if enabled
+        const shouldWait = taskConfig.waitForCompletion;
+        const timeoutMs = taskConfig.resultTimeoutMs ?? 300_000;
+
+        if (shouldWait) {
+          // Wait for the agent job to complete
+          const jobResult = await waitForAgentJob({
+            runId: childRunId,
+            timeoutMs,
+          });
+
+          if (!jobResult) {
+            return {
+              index,
+              label: taskConfig.label,
+              task: taskConfig.task,
+              status: "error",
+              childSessionKey,
+              runId: childRunId,
+              error: "Timeout waiting for subagent to complete",
+              completedAt: new Date().toISOString(),
+              durationMs: Date.now() - taskStartTime,
+            };
+          }
+
+          if (jobResult.status === "error") {
+            return {
+              index,
+              label: taskConfig.label,
+              task: taskConfig.task,
+              status: "error",
+              childSessionKey,
+              runId: childRunId,
+              error: jobResult.error ?? "Subagent execution failed",
+              completedAt: new Date().toISOString(),
+              durationMs: Date.now() - taskStartTime,
+            };
+          }
+
+          if (jobResult.status === "timeout") {
+            return {
+              index,
+              label: taskConfig.label,
+              task: taskConfig.task,
+              status: "error",
+              childSessionKey,
+              runId: childRunId,
+              error: "Subagent execution timed out",
+              completedAt: new Date().toISOString(),
+              durationMs: Date.now() - taskStartTime,
+            };
+          }
+
+          // Extract session ID from childSessionKey
+          // childSessionKey format: agent:{agentId}:subagent:{uuid} or agent:{agentId}:subagent:{uuid}:shared:{key}
+          const sessionIdMatch = childSessionKey.match(/^agent:[^:]+:subagent:([^:]+)/);
+          const sessionId = sessionIdMatch ? sessionIdMatch[1] : undefined;
+
+          if (!sessionId) {
+            return {
+              index,
+              label: taskConfig.label,
+              task: taskConfig.task,
+              status: "error",
+              childSessionKey,
+              runId: childRunId,
+              error: "Could not extract session ID from child session key",
+              completedAt: new Date().toISOString(),
+              durationMs: Date.now() - taskStartTime,
+            };
+          }
+
+          // Get store path for the session
+          const storePath = resolveStorePath(cfg.session?.store, { agentId: targetAgentId });
+
+          // Extract result from session
+          const { result, error } = await extractResultFromSession(sessionId, storePath);
+
+          return {
+            index,
+            label: taskConfig.label,
+            task: taskConfig.task,
+            status: "completed",
+            childSessionKey,
+            runId: childRunId,
+            result,
+            error,
+            completedAt: new Date().toISOString(),
+            durationMs: Date.now() - taskStartTime,
+          };
+        }
+
+        // Legacy behavior for when not waiting (backward compatible)
         return {
           index,
           label: taskConfig.label,
