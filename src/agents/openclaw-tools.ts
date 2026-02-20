@@ -13,6 +13,7 @@ import { createImageTool } from "./tools/image-tool.js";
 import { createMessageTool } from "./tools/message-tool.js";
 import { createNodesTool } from "./tools/nodes-tool.js";
 import { createOpencodeTool } from "./tools/opencode-tool.js";
+import { createParallelSpawnTool } from "./tools/parallel-spawn-tool.js";
 import { createSessionStatusTool } from "./tools/session-status-tool.js";
 import { createSessionsHistoryTool } from "./tools/sessions-history-tool.js";
 import { createSessionsListTool } from "./tools/sessions-list-tool.js";
@@ -140,6 +141,18 @@ export function createOpenClawTools(options?: {
       sandboxed: options?.sandboxed,
     }),
     createSessionsSpawnTool({
+      agentSessionKey: options?.agentSessionKey,
+      agentChannel: options?.agentChannel,
+      agentAccountId: options?.agentAccountId,
+      agentTo: options?.agentTo,
+      agentThreadId: options?.agentThreadId,
+      agentGroupId: options?.agentGroupId,
+      agentGroupChannel: options?.agentGroupChannel,
+      agentGroupSpace: options?.agentGroupSpace,
+      sandboxed: options?.sandboxed,
+      requesterAgentIdOverride: options?.requesterAgentIdOverride,
+    }),
+    createParallelSpawnTool({
       agentSessionKey: options?.agentSessionKey,
       agentChannel: options?.agentChannel,
       agentAccountId: options?.agentAccountId,
