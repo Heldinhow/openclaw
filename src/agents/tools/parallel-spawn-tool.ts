@@ -38,6 +38,9 @@ const ParallelTaskSchema = Type.Object({
   label: Type.Optional(Type.String({ description: "Label for this subagent" })),
   contextSharing: Type.Optional(optionalStringEnum(["none", "summary", "recent", "full"] as const)),
   sharedKey: Type.Optional(Type.String({ description: "Shared context key for this task" })),
+  chainAfter: Type.Optional(
+    Type.String({ description: "Task label or run ID to wait for before starting this task" }),
+  ),
 });
 
 // Wait strategy: "all" | "any" | "race" | number
@@ -55,6 +58,12 @@ const ParallelSpawnToolSchema = Type.Object({
     Type.String({ description: "Shared key for all tasks (optional namespace)" }),
   ),
   timeout: Type.Optional(Type.Number({ minimum: 0, description: "Overall timeout in seconds" })),
+  skipOnDependencyError: Type.Optional(
+    Type.Boolean({
+      description:
+        "If true, tasks with chainAfter will skip if their dependency task fails. Default: false (task runs regardless)",
+    }),
+  ),
   // Aggregate results options
   aggregate: Type.Optional(
     Type.Object({
@@ -80,7 +89,7 @@ interface TaskResult {
   index: number;
   label?: string;
   task: string;
-  status: "accepted" | "completed" | "error";
+  status: "accepted" | "completed" | "error" | "skipped";
   childSessionKey?: string;
   runId?: string;
   result?: unknown;
@@ -180,6 +189,47 @@ function normalizeModelSelection(value: unknown): string | undefined {
   return undefined;
 }
 
+/**
+ * Wait for a subagent run to complete
+ */
+async function waitForRunCompletion(
+  runId: string,
+  timeoutMs = 300_000, // 5 minutes default
+  pollIntervalMs = 2000, // 2 seconds
+): Promise<{ status: "completed" | "error" | "timeout"; result?: unknown; error?: string }> {
+  const startTime = Date.now();
+
+  while (Date.now() - startTime < timeoutMs) {
+    try {
+      const response = await callGateway<{
+        status?: string;
+        result?: unknown;
+        error?: string;
+        state?: string;
+      }>({
+        method: "runs.get",
+        params: { runId },
+        timeoutMs: 10_000,
+      });
+
+      const status = response?.status ?? response?.state;
+      if (status === "completed" || status === "done" || status === "success") {
+        return { status: "completed", result: response?.result };
+      }
+      if (status === "error" || status === "failed") {
+        return { status: "error", error: response?.error as string };
+      }
+    } catch {
+      // Run might not exist yet, continue polling
+    }
+
+    // Wait before next poll
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+  }
+
+  return { status: "timeout", error: `Timeout waiting for run ${runId}` };
+}
+
 export function createParallelSpawnTool(opts?: {
   agentSessionKey?: string;
   agentChannel?: GatewayMessageChannel;
@@ -221,8 +271,12 @@ export function createParallelSpawnTool(opts?: {
           label: typeof taskObj.label === "string" ? taskObj.label : `parallel-${index}`,
           contextSharing: taskObj.contextSharing as ContextSharingMode | undefined,
           sharedKey: typeof taskObj.sharedKey === "string" ? taskObj.sharedKey : undefined,
+          chainAfter: typeof taskObj.chainAfter === "string" ? taskObj.chainAfter : undefined,
         };
       });
+
+      // Parse skipOnDependencyError
+      const skipOnDependencyError = params.skipOnDependencyError === true;
 
       // Parse wait strategy
       const waitRaw = params.wait;
@@ -378,7 +432,7 @@ export function createParallelSpawnTool(opts?: {
             params: { key: childSessionKey, spawnDepth: callerDepth + 1 },
             timeoutMs: 10_000,
           });
-        } catch {
+        } catch (err) {
           const messageText =
             err instanceof Error ? err.message : typeof err === "string" ? err : "error";
           return {
@@ -451,7 +505,7 @@ export function createParallelSpawnTool(opts?: {
           if (typeof response?.runId === "string" && response.runId) {
             childRunId = response.runId;
           }
-        } catch {
+        } catch (err) {
           const messageText =
             err instanceof Error ? err.message : typeof err === "string" ? err : "error";
           return {
@@ -492,10 +546,142 @@ export function createParallelSpawnTool(opts?: {
         };
       };
 
-      // Execute all tasks in parallel
-      const spawnedResults = await Promise.all(
-        tasks.map((task, index) => spawnSingleTask(task, index)),
+      // Build a map of label -> runId and index for chainAfter resolution
+      const taskLabelMap = new Map<string, { index: number; runId?: string; label: string }>();
+      tasks.forEach((task, index) => {
+        taskLabelMap.set(task.label, { index, label: task.label });
+      });
+
+      // Track results as they come in
+      const results: TaskResult[] = Array.from({ length: tasks.length });
+      const completedRunIds = new Map<string, TaskResult>();
+
+      // Function to resolve chainAfter reference (label or runId)
+      const resolveChainAfter = (chainRef: string): { runId: string; label?: string } | null => {
+        // First check if it's a known label
+        const labelEntry = taskLabelMap.get(chainRef);
+        if (labelEntry?.runId) {
+          return { runId: labelEntry.runId, label: chainRef };
+        }
+        // Check if it's a run ID we already have
+        const existingResult = completedRunIds.get(chainRef);
+        if (existingResult?.runId) {
+          return { runId: existingResult.runId, label: existingResult.label };
+        }
+        // Could be a run ID from a previously spawned task
+        return { runId: chainRef };
+      };
+
+      // Execute tasks with chainAfter support
+      // First, spawn all tasks without dependencies in parallel
+      const tasksWithoutDeps = tasks
+        .map((task, index) => ({ task, index }))
+        .filter(({ task }) => !task.chainAfter);
+
+      const tasksWithDeps = tasks
+        .map((task, index) => ({ task, index }))
+        .filter(({ task }) => !!task.chainAfter);
+
+      // Spawn tasks without dependencies
+      await Promise.all(
+        tasksWithoutDeps.map(async ({ task, index }) => {
+          const result = await spawnSingleTask(task, index);
+          results[result.index] = result;
+          if (result.runId) {
+            completedRunIds.set(result.runId, result);
+            // Update the label map with the runId
+            const labelEntry = taskLabelMap.get(task.label);
+            if (labelEntry) {
+              labelEntry.runId = result.runId;
+            }
+          }
+        }),
       );
+
+      // Now process tasks with dependencies sequentially
+      for (const { task, index } of tasksWithDeps) {
+        if (!task.chainAfter) {
+          continue;
+        }
+
+        const chainRef = task.chainAfter;
+        let dependencyRunId: string | undefined;
+        let dependencyLabel: string | undefined;
+
+        // Resolve the chainAfter reference
+        const resolved = resolveChainAfter(chainRef);
+        if (resolved) {
+          dependencyRunId = resolved.runId;
+          dependencyLabel = resolved.label;
+        } else {
+          // chainAfter reference not found - treat as error or skip
+          results[index] = {
+            index,
+            label: task.label,
+            task: task.task,
+            status: "error",
+            error: `chainAfter reference "${chainRef}" not found`,
+          };
+          continue;
+        }
+
+        // Wait for the dependency to complete
+        if (dependencyRunId) {
+          const waitResult = await waitForRunCompletion(dependencyRunId, 300_000);
+
+          // Check if we should skip due to dependency error
+          if (waitResult.status === "error") {
+            if (skipOnDependencyError) {
+              results[index] = {
+                index,
+                label: task.label,
+                task: task.task,
+                status: "skipped",
+                error: `Skipped due to failed dependency: ${dependencyLabel || dependencyRunId}`,
+              };
+              continue;
+            }
+            // If not skipping, continue to spawn the task anyway
+          }
+
+          if (waitResult.status === "timeout") {
+            results[index] = {
+              index,
+              label: task.label,
+              task: task.task,
+              status: "error",
+              error: waitResult.error,
+            };
+            continue;
+          }
+        }
+
+        // Spawn the dependent task
+        const result = await spawnSingleTask(task, index);
+        results[result.index] = result;
+        if (result.runId) {
+          completedRunIds.set(result.runId, result);
+          const labelEntry = taskLabelMap.get(task.label);
+          if (labelEntry) {
+            labelEntry.runId = result.runId;
+          }
+        }
+      }
+
+      // Handle any tasks that weren't set (in case of errors in processing)
+      for (let i = 0; i < tasks.length; i++) {
+        if (!results[i]) {
+          results[i] = {
+            index: i,
+            label: tasks[i].label,
+            task: tasks[i].task,
+            status: "error",
+            error: "Task was not processed",
+          };
+        }
+      }
+
+      const spawnedResults = results;
 
       // For now, we return the spawned results immediately
       // In a full implementation, we would wait for results based on wait strategy
