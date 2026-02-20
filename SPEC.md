@@ -1,120 +1,84 @@
-# SPEC.md - Context Sharing Feature
+# Feature: Pipeline/Chained Sub-agents
 
-## Problem Statement
+## Overview
 
-Currently, when spawning multiple sub-agents (either in parallel or chained via `chainAfter`/`dependsOn`), there is no built-in way to share state between them. Sub-agents run in isolation with no access to shared context or data produced by sibling/parent sub-agents. The Context Sharing feature enables passing and accessing shared state between sub-agents.
+Allow sub-agent B to wait for sub-agent A to complete before starting, enabling sequential task execution with dependencies.
 
-## Desired Behavior
+## Parameters
 
-### Core Requirements
+- `chainAfter`: runId - Wait for this run to complete before starting
+- `dependsOn`: runId - Alias for chainAfter
 
-1. **sharedContext parameter in sessions_spawn**
-   - Add `sharedContext` as an optional object parameter
-   - Can contain any serializable key-value pairs
-   - Available to the spawned sub-agent as part of its context
+## Behavior
 
-2. **Context storage and retrieval**
-   - Store shared context in the subagent registry
-   - Sub-agents can access shared context via tool or system prompt injection
-   - Context is accessible to all sub-agents in the same "family" (same parent session)
+1. When a sub-agent is spawned with `chainAfter`, it waits in queue
+2. Once the dependent run completes (success or failure), the chained run starts
+3. The dependent run's result is passed to the chained run via sharedContext
+4. If dependent run fails, chained run can optionally still execute or be cancelled
 
-3. **API Usage**
+## Use Cases
 
-```typescript
-// Spawn with shared context
-sessions_spawn({
-  task: "Research the best AI frameworks",
-  label: "researcher",
-  sharedContext: {
-    projectGoal: "Build a modern web app",
-    targetAudience: "Developers",
-    constraints: ["budget", "timeline"],
-  },
-});
+- Task B needs output from Task A
+- Sequential processing where each step depends on previous
+- Error propagation between dependent tasks
 
-// Later sub-agents can access previous context
-sessions_spawn({
-  task: "Design the UI based on research",
-  label: "designer",
-  sharedContext: {
-    $research: "reference", // Special syntax to include previous result
-  },
-});
+## Edge Cases
 
-// Parallel with shared context
-sessions_spawn({
-  task: ["Task A", "Task B", "Task C"],
-  parallel: true,
-  sharedContext: {
-    sharedData: "available to all",
-  },
-});
-```
+- Dependent run doesn't exist: Error immediately
+- Dependent run already completed: Start immediately
+- Dependent run times out: Configurable (skip or cancel)
+- Circular dependency: Detect and reject
 
-4. **Context propagation**
-   - Child sub-agents inherit parent context by default
-   - Can explicitly override or extend parent context
-   - Context is read-only for child sub-agents (cannot modify parent's context)
+---
 
-## Implementation Plan
+# Feature: Retry Policies
 
-### 1. Update SessionsSpawnToolSchema
+## Overview
 
-Add sharedContext parameter:
+Automatic retry when sub-agent fails, with configurable backoff strategies.
 
-```typescript
-sharedContext: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
-```
+## Parameters
 
-### 2. Update SpawnSubagentParams
+- `retryCount`: number - Max retry attempts (default: 0)
+- `retryDelay`: number - Initial delay in ms
+- `retryBackoff`: "fixed" | "exponential" | "linear" - Backoff strategy
+- `retryMaxTime`: number - Max total time for retries in ms
+- `retryOn`: string[] - Error codes/patterns to retry on
 
-Add sharedContext to the params type:
+## Behavior
+
+1. On first failure, wait `retryDelay` ms
+2. Apply backoff strategy for subsequent retries:
+   - Fixed: same delay each time
+   - Linear: delay += retryDelay each time
+   - Exponential: delay \*= 2 each time
+3. Retry up to `retryCount` times
+4. If all retries fail, return final error
+5. Only retry on errors matching `retryOn` (if specified)
+
+## Use Cases
+
+- Network failures (temporary timeouts)
+- Rate limiting (temporary API limits)
+- Transient service failures
+
+## Example
 
 ```typescript
-sharedContext?: Record<string, unknown>;
+{
+  retryCount: 3,
+  retryDelay: 1000,
+  retryBackoff: "exponential",
+  retryOn: ["ETIMEDOUT", "ECONNRESET", "rate_limit"]
+}
 ```
 
-### 3. Update subagent-registry.ts
+---
 
-Add context storage and retrieval:
+# Implementation Notes
 
-- `storeSharedContext(runId: string, context: Record<string, unknown>): void`
-- `getSharedContext(runId: string): Record<string, | unknown> | undefined`
-- `getParentSharedContext(requesterSessionKey: string): Record<string, unknown> | undefined`
+Both features should integrate with existing:
 
-### 4. Update subagent-spawn.ts
-
-- Accept and process sharedContext parameter
-- Merge with parent context if available
-- Store context in registry
-- Inject context into sub-agent's system prompt
-
-### 5. Context injection in system prompt
-
-The shared context should be injected into the sub-agent's system prompt so it's aware of the shared state:
-
-```
-[Shared Context]:
-- projectGoal: "Build a modern web app"
-- targetAudience: "Developers"
-```
-
-## Files to Modify
-
-| File                                      | Change                                        |
-| ----------------------------------------- | --------------------------------------------- |
-| `src/agents/tools/sessions-spawn-tool.ts` | Add sharedContext to schema and pass to spawn |
-| `src/agents/subagent-spawn.ts`            | Add sharedContext param and store in registry |
-| `src/agents/subagent-registry.ts`         | Add context storage/retrieval functions       |
-| `src/agents/subagent-announce.ts`         | Inject context into system prompt             |
-
-## Acceptance Criteria
-
-- [ ] Can pass sharedContext to sessions_spawn
-- [ ] Sub-agent receives sharedContext in its execution
-- [ ] Shared context is accessible via subagent-registry
-- [ ] Context is injected into sub-agent's system prompt
-- [ ] Works with parallel spawning (all sub-agents get same context)
-- [ ] Works with chained sub-agents (subsequent sub-agents can access prior results)
-- [ ] Parent context is inherited by child sub-agents
-- [ ] Backwards compatible (existing code works without sharedContext)
+- `subagent-registry.ts` - Track runs and dependencies
+- `sessions_spawn` tool - Add new parameters
+- Result aggregation - Pass dependent results to chained runs

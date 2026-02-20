@@ -236,3 +236,12 @@
   - `node --import tsx scripts/release-check.ts`
   - `pnpm release:check`
   - `pnpm test:install:smoke` or `OPENCLAW_INSTALL_SMOKE_SKIP_NONROOT=1 pnpm test:install:smoke` for non-root smoke path.
+
+## Active Technologies
+
+- TypeScript / Node.js 22+ + Existing OpenClaw agent tools, TypeBox for schemas, existing skill subsystem (001-skill-injection)
+- In-memory for session (as specified in spec) (001-skill-injection)
+
+## Recent Changes
+
+- 001-skill-injection: Added TypeScript / Node.js 22+ + Existing OpenClaw agent tools, TypeBox for schemas, existing skill subsystem

@@ -13,6 +13,40 @@ import {
 } from "./subagent-registry.store.js";
 import { resolveAgentTimeoutMs } from "./timeout.js";
 
+type RetryBackoffStrategy = "fixed" | "exponential" | "linear";
+
+function calculateDelay(
+  attempt: number,
+  baseDelay: number,
+  strategy: RetryBackoffStrategy,
+): number {
+  switch (strategy) {
+    case "exponential":
+      return baseDelay * Math.pow(2, attempt);
+    case "linear":
+      return baseDelay * (attempt + 1);
+    case "fixed":
+    default:
+      return baseDelay;
+  }
+}
+
+function isRetryableError(errorMessage: string, retryOnPatterns: string[] | undefined): boolean {
+  if (!retryOnPatterns || retryOnPatterns.length === 0) {
+    return true;
+  }
+  const lowerErrorMessage = errorMessage.toLowerCase();
+  return retryOnPatterns.some((pattern) => lowerErrorMessage.includes(pattern.toLowerCase()));
+}
+
+export type RetryConfig = {
+  retryCount: number;
+  retryDelay: number;
+  retryBackoff: "fixed" | "exponential" | "linear";
+  retryOn?: string[];
+  retryMaxTime?: number;
+};
+
 export type SubagentRunRecord = {
   runId: string;
   childSessionKey: string;
@@ -37,12 +71,16 @@ export type SubagentRunRecord = {
   announceRetryCount?: number;
   /** Timestamp of the last announce retry attempt (for backoff). */
   lastAnnounceRetryAt?: number;
-  /** Aggregation params for result aggregation feature */
-  aggregation?: SpawnAggregationParams;
   /** Whether cancellation has been requested for this sub-agent run. */
   cancellationRequested?: boolean;
   /** Timestamp when cancellation was requested. */
   cancellationRequestedAt?: number;
+  /** Aggregation params for result aggregation feature */
+  aggregation?: SpawnAggregationParams;
+  retryConfig?: RetryConfig;
+  retryAttempt?: number;
+  originalTask?: string;
+  originalLabel?: string;
 };
 
 const subagentRuns = new Map<string, SubagentRunRecord>();
@@ -334,10 +372,80 @@ function ensureListener() {
       return;
     }
 
+    const shouldRetry = handleExecutionRetry(entry);
+    if (shouldRetry) {
+      return;
+    }
+
     if (!startSubagentAnnounceCleanupFlow(evt.runId, entry)) {
       return;
     }
   });
+}
+
+async function spawnRetrySubagent(originalEntry: SubagentRunRecord): Promise<void> {
+  const retryAttempt = (originalEntry.retryAttempt ?? 0) + 1;
+  const { spawnSubagent } = await import("./subagent-spawn.js");
+
+  const result = await spawnSubagent(
+    {
+      task: originalEntry.originalTask ?? originalEntry.task,
+      label: originalEntry.originalLabel ?? originalEntry.label,
+      agentId: undefined,
+      model: originalEntry.model,
+      runTimeoutSeconds: originalEntry.runTimeoutSeconds,
+      cleanup: originalEntry.cleanup,
+      expectsCompletionMessage: originalEntry.expectsCompletionMessage,
+      aggregation: originalEntry.aggregation,
+    },
+    {
+      agentSessionKey: originalEntry.requesterSessionKey,
+    },
+  );
+
+  if (result.status === "accepted") {
+    originalEntry.retryAttempt = retryAttempt;
+    persistSubagentRuns();
+  }
+}
+
+function handleExecutionRetry(entry: SubagentRunRecord): boolean {
+  if (entry.outcome?.status !== "error") {
+    return false;
+  }
+
+  if (!entry.retryConfig || entry.retryConfig.retryCount <= 0) {
+    return false;
+  }
+
+  const currentAttempt = entry.retryAttempt ?? 0;
+  if (currentAttempt >= entry.retryConfig.retryCount) {
+    return false;
+  }
+
+  const errorMessage = entry.outcome?.error ?? "";
+  if (!isRetryableError(errorMessage, entry.retryConfig.retryOn)) {
+    return false;
+  }
+
+  if (entry.retryConfig.retryMaxTime) {
+    const elapsed = Date.now() - (entry.startedAt ?? entry.createdAt);
+    if (elapsed >= entry.retryConfig.retryMaxTime) {
+      return false;
+    }
+  }
+
+  const delay = calculateDelay(
+    currentAttempt,
+    entry.retryConfig.retryDelay,
+    entry.retryConfig.retryBackoff,
+  );
+
+  setTimeout(() => {
+    void spawnRetrySubagent(entry);
+  }, delay).unref?.();
+
+  return true;
 }
 
 function finalizeSubagentCleanup(runId: string, cleanup: "delete" | "keep", didAnnounce: boolean) {
@@ -540,6 +648,9 @@ export function registerSubagentRun(params: {
   runTimeoutSeconds?: number;
   expectsCompletionMessage?: boolean;
   aggregation?: SpawnAggregationParams;
+  retryConfig?: RetryConfig;
+  originalTask?: string;
+  originalLabel?: string;
 }) {
   const now = Date.now();
   const cfg = loadConfig();
@@ -565,6 +676,9 @@ export function registerSubagentRun(params: {
     archiveAtMs,
     cleanupHandled: false,
     aggregation: params.aggregation,
+    retryConfig: params.retryConfig,
+    originalTask: params.originalTask,
+    originalLabel: params.originalLabel,
   });
   ensureListener();
   persistSubagentRuns();
@@ -822,6 +936,58 @@ export function isSubagentCancellationRequested(runId: string): boolean {
   return entry.cancellationRequested === true;
 }
 
+export function getParentSharedContext(
+  requesterSessionKey: string,
+): Record<string, unknown> | undefined {
+  const key = requesterSessionKey.trim();
+  if (!key) {
+    return undefined;
+  }
+  const runs = getRunsSnapshotForRead();
+  let parentRunId: string | undefined;
+  let latestCreatedAt = 0;
+
+  for (const [runId, entry] of runs.entries()) {
+    if (entry.requesterSessionKey === key && sharedContexts.has(runId)) {
+      if (entry.createdAt > latestCreatedAt) {
+        latestCreatedAt = entry.createdAt;
+        parentRunId = runId;
+      }
+    }
+  }
+
+  if (parentRunId) {
+    return sharedContexts.get(parentRunId);
+  }
+  return undefined;
+}
+
+/**
+ * Store shared context for a subagent run.
+ * @param runId - The run ID to associate the context with
+ * @param context - The shared context object to store
+ */
+export function storeSharedContext(runId: string, context: Record<string, unknown>): void {
+  const key = runId.trim();
+  if (!key || !context) {
+    return;
+  }
+  sharedContexts.set(key, context);
+}
+
+/**
+ * Get shared context for a specific subagent run.
+ * @param runId - The run ID to retrieve context for
+ * @returns The shared context object or undefined if not found
+ */
+export function getSharedContext(runId: string): Record<string, unknown> | undefined {
+  const key = runId.trim();
+  if (!key) {
+    return undefined;
+  }
+  return sharedContexts.get(key);
+}
+
 export function listSubagentRunsForRequester(requesterSessionKey: string): SubagentRunRecord[] {
   const key = requesterSessionKey.trim();
   if (!key) {
@@ -973,59 +1139,4 @@ export async function waitForSubagentRunCompletion(
     outcome: "timeout",
     error: `Timed out after ${timeoutMs}ms waiting for run ${key}`,
   };
-}
-
-/**
- * Store shared context for a sub-agent run.
- * This allows sharing state between sub-agents in the same "family".
- */
-export function storeSharedContext(runId: string, context: Record<string, unknown>): void {
-  const key = runId.trim();
-  if (!key || !context) {
-    return;
-  }
-  sharedContexts.set(key, context);
-}
-
-/**
- * Get shared context for a specific sub-agent run.
- */
-export function getSharedContext(runId: string): Record<string, unknown> | undefined {
-  const key = runId.trim();
-  if (!key) {
-    return undefined;
-  }
-  return sharedContexts.get(key);
-}
-
-/**
- * Get the parent's shared context for a given requester session key.
- * This allows child sub-agents to inherit context from their parent.
- */
-export function getParentSharedContext(
-  requesterSessionKey: string,
-): Record<string, unknown> | undefined {
-  const key = requesterSessionKey.trim();
-  if (!key) {
-    return undefined;
-  }
-
-  // Find the most recent run from this requester that has shared context
-  const runs = getRunsSnapshotForRead();
-  let parentRunId: string | undefined;
-  let latestCreatedAt = 0;
-
-  for (const [runId, entry] of runs.entries()) {
-    if (entry.requesterSessionKey === key && sharedContexts.has(runId)) {
-      if (entry.createdAt > latestCreatedAt) {
-        latestCreatedAt = entry.createdAt;
-        parentRunId = runId;
-      }
-    }
-  }
-
-  if (parentRunId) {
-    return sharedContexts.get(parentRunId);
-  }
-  return undefined;
 }

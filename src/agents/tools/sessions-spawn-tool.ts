@@ -44,8 +44,8 @@ const SessionsSpawnToolSchema = Type.Object({
   ),
   retryOn: Type.Optional(Type.Array(Type.String())),
   retryMaxTime: Type.Optional(Type.Number({ minimum: 0 })),
-  // Context sharing parameter
   sharedContext: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+  skills: Type.Optional(Type.Array(Type.String())),
 });
 
 export function createSessionsSpawnTool(opts?: {
@@ -134,13 +134,15 @@ export function createSessionsSpawnTool(opts?: {
           ? Math.floor(params.retryMaxTime)
           : undefined;
 
-      // Shared context parameter
       const sharedContext =
         params.sharedContext && typeof params.sharedContext === "object"
           ? (params.sharedContext as Record<string, unknown>)
           : undefined;
 
-      // Resolve dependency runId (chainAfter takes precedence, dependsOn is alias)
+      const skills = Array.isArray(params.skills)
+        ? params.skills.filter((s): s is string => typeof s === "string")
+        : undefined;
+
       const dependencyRunId = chainAfter || dependsOn;
 
       // Validate collectInto if provided
@@ -202,6 +204,7 @@ export function createSessionsSpawnTool(opts?: {
             retryOn,
             retryMaxTime,
             sharedContext,
+            skills,
           },
           {
             agentSessionKey: opts?.agentSessionKey,
@@ -261,6 +264,7 @@ export function createSessionsSpawnTool(opts?: {
                 retryOn,
                 retryMaxTime,
                 sharedContext,
+                skills,
               },
               {
                 agentSessionKey: opts?.agentSessionKey,
