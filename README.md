@@ -91,6 +91,19 @@ parallel_spawn({
 
 ---
 
+## Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `parallel_spawn` | Runs multiple sub-agents in parallel with wait strategies |
+| `sessions_spawn` | Spawns a single sub-agent with advanced options |
+| `sessions_send` | Sends a message directly to another agent |
+| `sessions_list` | Lists active sessions |
+| `sessions_history` | Fetches session history |
+| `subagents` | Manages sub-agents (list, cancel, steer) |
+
+---
+
 ## Installation
 
 ```bash
@@ -104,15 +117,27 @@ pnpm install
 # Build
 pnpm build
 
-# Run
-pnpm start
+# Start via wizard (recommended)
+pnpm openclaw onboard
+```
+
+> Requirement: Node.js 22+. Bun is supported and preferred for TypeScript execution (scripts, dev, tests).
+
+### Docker
+
+```bash
+# Full setup with Docker
+./docker-setup.sh
+
+# Or with docker-compose
+docker-compose up
 ```
 
 ---
 
-## API Usage
+## API — Gateway WebSocket
 
-### Gateway API
+The Gateway exposes a control plane at `ws://127.0.0.1:18789` with REST support for tool invocation:
 
 ```bash
 curl -X POST "http://localhost:18789/tools/invoke" \
@@ -122,35 +147,70 @@ curl -X POST "http://localhost:18789/tools/invoke" \
     "tool": "parallel_spawn",
     "args": {
       "tasks": [
-        {"task": "Task 1", "label": "t1"},
-        {"task": "Task 2", "label": "t2"}
-      ]
+        { "task": "Task 1", "label": "t1" },
+        { "task": "Task 2", "label": "t2" }
+      ],
+      "wait": "all"
     }
   }'
 ```
 
 ---
 
-## Available Tools
+## Repository Structure
 
-| Tool | Description |
-|------|-------------|
-| `parallel_spawn` | Execute multiple sub-agents in parallel with wait strategies |
-| `sessions_spawn` | Spawn a single sub-agent with advanced options |
-| `sessions_send` | Message another agent directly |
-| `sessions_list` | List active sessions |
-| `sessions_history` | Fetch session history |
-| `subagents` | Manage sub-agents (list, cancel, steer) |
+```
+.
+├── .agents/               # Agent team definitions and skills
+├── .agent/workflows       # Declarative orchestration workflows
+├── src/                  # Platform core (TypeScript)
+├── packages/             # Internal monorepo packages
+├── apps/                 # Companion apps (macOS, iOS, Android)
+├── skills/               # Installed and managed skills
+├── workspaces/           # Agent workspaces
+├── AGENTS.md             # Agent documentation and conventions
+├── SPEC.md               # Technical specification
+└── VISION.md             # Fork vision and roadmap
+```
 
 ---
 
-## Resources
+## Differences from Upstream
 
-- [Official Documentation](https://docs.openclaw.ai)
-- [GitHub Repository](https://github.com/openclaw/openclaw)
+| Feature | Upstream | This Fork |
+|---------|----------|-----------|
+| Multi-channel personal assistant | ✅ | ✅ |
+| Basic sub-agents | ✅ | ✅ |
+| Specialized agent team | ❌ | ✅ |
+| Parallel execution with wait strategies | Partial | ✅ |
+| Task chaining with chainAfter | ❌ | ✅ |
+| Context sharing between agents | ❌ | ✅ |
+| Hierarchical delegation via Commander | ❌ | ✅ |
+
+---
+
+## Ecosystem & Integrations
+
+This fork is compatible with tools from the OpenClaw ecosystem:
+
+- [Mission Control](https://github.com/crshdn/mission-control) — Kanban dashboard for visual agent and task management via Gateway
+- [Antfarm](https://github.com/snarktank/antfarm) — Specialized agent team (planner, developer, verifier, tester, reviewer) in repeatable workflows
+- [ClawX](https://github.com/ValueCell-ai/ClawX) — Desktop interface for visual orchestration, no terminal required
+
+---
+
+## Supported Channels
+
+WhatsApp · Telegram · Slack · Discord · Google Chat · Signal · iMessage · Microsoft Teams · Matrix · Zalo · WebChat · macOS · iOS · Android
 
 ---
 
 ## License
 
-MIT
+MIT — see [LICENSE](./LICENSE)
+
+---
+
+## Upstream
+
+Based on [openclaw/openclaw](https://github.com/openclaw/openclaw). Upstream contributions are periodically merged into this fork.
