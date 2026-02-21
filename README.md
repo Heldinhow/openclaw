@@ -10,7 +10,49 @@ This fork focuses on **multi-agent orchestration** capabilities not available in
 
 ## Features
 
-### 1. Parallel Spawn (`parallel_spawn`)
+### 1. Multi-Agent Team with @mention Routing
+
+A collaborative AI team with 5 specialized agents that can be invoked via @mention in Telegram:
+
+| Agent      | Command       | Function                                    |
+| ---------- | ------------- | ------------------------------------------- |
+| Commander  | `@commander`  | Coordination, decisions, strategy (default) |
+| Strategist | `@strategist` | Analysis, long-term planning                |
+| Engineer   | `@engineer`   | Technical implementation, code              |
+| Creator    | `@creator`    | Design, content creation                    |
+| Planner    | `@planner`    | Scheduling, roadmaps, project management    |
+
+**Usage in Telegram:**
+
+```
+@planner create a roadmap for Q1
+@engineer help me write a function
+@strategist analyze the market
+```
+
+### 2. Session Isolation
+
+Each agent operates in isolated workspaces with:
+
+- Individual memory (`MEMORY.md`, `GROUP_MEMORY.md`)
+- Team context (`TEAM-DIRECTORY.md`, `TEAM-RULEBOOK.md`)
+- Role definitions (`SOUL.md`, `AGENTS.md`, `ROLE-COLLAB-RULES.md`)
+
+**Workspace structure:**
+
+```
+~/.openclaw/workspaces/{commander,strategist,engineer,creator,planner}/
+├── SOUL.md              # Agent identity & personality
+├── AGENTS.md            # Operational manual
+├── ROLE-COLLAB-RULES.md # Collaboration rules
+├── TEAM-DIRECTORY.md    # Team members
+├── TEAM-RULEBOOK.md     # Operating rules
+├── MEMORY.md            # Long-term memory
+├── GROUP_MEMORY.md      # Shared team context
+└── memory/              # Daily logs (YYYY-MM-DD.md)
+```
+
+### 3. Parallel Spawn (`parallel_spawn`)
 
 Execute multiple sub-agents simultaneously with configurable wait strategies.
 
@@ -28,7 +70,7 @@ Execute multiple sub-agents simultaneously with configurable wait strategies.
 }
 ```
 
-### 2. Chain Dependencies (`chainAfter`)
+### 4. Chain Dependencies (`chainAfter`)
 
 Execute tasks sequentially — task B waits for task A to start before running.
 
@@ -41,7 +83,7 @@ Execute tasks sequentially — task B waits for task A to start before running.
 }
 ```
 
-### 3. Context Sharing
+### 5. Context Sharing
 
 Share state between sub-agents using sharedContext.
 
@@ -54,7 +96,7 @@ Share state between sub-agents using sharedContext.
 }
 ```
 
-### 4. Skip on Dependency Error
+### 6. Skip on Dependency Error
 
 Optionally skip dependent tasks if the dependency fails.
 
@@ -86,7 +128,87 @@ pnpm start
 
 ---
 
+## Configuration
+
+### Multi-Agent Setup
+
+Edit `~/.openclaw/openclaw.json`:
+
+```json
+{
+  "session": {
+    "dmScope": "per-account-channel-peer"
+  },
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "groupPolicy": "allowlist"
+    }
+  },
+  "agents": {
+    "list": [
+      {
+        "id": "commander",
+        "default": true,
+        "identity": { "name": "Commander", "emoji": "🎯" },
+        "groupChat": { "mentionPatterns": ["@commander"] }
+      },
+      {
+        "id": "strategist",
+        "identity": { "name": "Strategist", "emoji": "🧠" },
+        "groupChat": { "mentionPatterns": ["@strategist"] }
+      },
+      {
+        "id": "engineer",
+        "identity": { "name": "Engineer", "emoji": "🔧" },
+        "groupChat": { "mentionPatterns": ["@engineer"] }
+      },
+      {
+        "id": "creator",
+        "identity": { "name": "Creator", "emoji": "🎨" },
+        "groupChat": { "mentionPatterns": ["@creator"] }
+      },
+      {
+        "id": "planner",
+        "identity": { "name": "Planner", "emoji": "📋" },
+        "groupChat": { "mentionPatterns": ["@planner"] }
+      }
+    ]
+  }
+}
+```
+
+### Response Prefix
+
+Configure how agents identify themselves:
+
+```json
+{
+  "messages": {
+    "responsePrefix": "{identity.name}:"
+  }
+}
+```
+
+Result: `Commander:`, `Planner:`, etc.
+
+---
+
 ## Usage
+
+### Via Telegram
+
+Add your bot to a group and use @mention to invoke specific agents:
+
+```
+@planner create a 3-week roadmap
+@engineer write a TypeScript function
+@strategist analyze competitor products
+@creator design a logo concept
+@commander coordinate this project
+```
+
+Messages without @mention route to Commander (default agent).
 
 ### Via Gateway API
 
