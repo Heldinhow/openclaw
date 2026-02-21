@@ -177,6 +177,8 @@ export const buildTelegramMessageContext = async ({
       id: peerId,
     },
     parentPeer,
+    messageText: msg.text ?? msg.caption,
+    messageEntities: msg.entities ?? msg.caption_entities,
   });
   const baseSessionKey = route.sessionKey;
   // DMs: use raw messageThreadId for thread sessions (not forum topic ids)

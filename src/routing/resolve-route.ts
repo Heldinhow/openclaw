@@ -33,6 +33,8 @@ export type ResolveAgentRouteInput = {
   teamId?: string | null;
   /** Discord member role IDs — used for role-based agent routing. */
   memberRoleIds?: string[];
+  messageText?: string;
+  messageEntities?: TelegramMessageEntity[];
 };
 
 export type ResolvedAgentRoute = {
@@ -301,6 +303,12 @@ export function resolveAgentRoute(input: ResolveAgentRouteInput): ResolvedAgentR
   const memberRoleIds = input.memberRoleIds ?? [];
   const memberRoleIdSet = new Set(memberRoleIds);
 
+  const mentionedAgentId = resolveAgentMention(
+    input.messageText ?? "",
+    input.messageEntities,
+    input.cfg,
+  );
+
   const bindings = getEvaluatedBindingsForChannelAccount(input.cfg, channel, accountId);
 
   const dmScope = input.cfg.session?.dmScope ?? "main";
@@ -415,6 +423,16 @@ export function resolveAgentRoute(input: ResolveAgentRouteInput): ResolvedAgentR
     },
   ];
 
+  if (mentionedAgentId) {
+    const validatedAgentId = pickFirstExistingAgentId(input.cfg, mentionedAgentId);
+    if (validatedAgentId) {
+      if (shouldLogDebug) {
+        logDebug(`[routing] match: matchedBy=mention agentId=${validatedAgentId}`);
+      }
+      return choose(validatedAgentId, "default");
+    }
+  }
+
   for (const tier of tiers) {
     if (!tier.enabled) {
       continue;
@@ -436,4 +454,66 @@ export function resolveAgentRoute(input: ResolveAgentRouteInput): ResolvedAgentR
   }
 
   return choose(resolveDefaultAgentId(input.cfg), "default");
+}
+
+/** Telegram message entity for extracting mentions. */
+type TelegramMessageEntity = {
+  type: string;
+  offset: number;
+  length: number;
+  user?: {
+    id: number;
+    is_bot: boolean;
+    first_name: string;
+    last_name?: string;
+    username?: string;
+  };
+};
+
+/** Detects @mentions in Telegram messages and returns the matching agentId. */
+export function resolveAgentMention(
+  text: string,
+  entities?: TelegramMessageEntity[],
+  cfg?: OpenClawConfig,
+): string | null {
+  if (!entities?.length || !text || !cfg?.agents?.list?.length) {
+    return null;
+  }
+
+  const mentions: string[] = [];
+  for (const ent of entities) {
+    if (ent.type === "mention") {
+      const mentionText = text.slice(ent.offset, ent.offset + ent.length);
+      mentions.push(mentionText);
+    }
+  }
+
+  if (mentions.length === 0) {
+    return null;
+  }
+
+  const agents = cfg.agents.list;
+  for (const agent of agents) {
+    const patterns = agent.groupChat?.mentionPatterns;
+    if (!patterns?.length) {
+      continue;
+    }
+
+    for (const mention of mentions) {
+      const normalizedMention = mention.toLowerCase();
+
+      for (const pattern of patterns) {
+        const normalizedPattern = pattern.toLowerCase();
+        const patternToMatch = normalizedPattern.startsWith("@")
+          ? normalizedPattern
+          : `@${normalizedPattern}`;
+
+        if (normalizedMention === patternToMatch) {
+          return agent.id;
+        }
+      }
+    }
+  }
+
+  return null;
 }
