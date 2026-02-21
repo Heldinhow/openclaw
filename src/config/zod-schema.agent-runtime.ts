@@ -663,7 +663,7 @@ export const ToolsSchema = z
       .optional(),
     agentToAgent: z
       .object({
-        enabled: z.boolean().optional(),
+        enabled: z.boolean().optional().default(true),
         allow: z.array(z.string()).optional(),
       })
       .strict()
