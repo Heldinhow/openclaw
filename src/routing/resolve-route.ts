@@ -476,6 +476,10 @@ export function resolveAgentMention(
   entities?: TelegramMessageEntity[],
   cfg?: OpenClawConfig,
 ): string | null {
+  logDebug(
+    `[resolveAgentMention] text: ${text?.substring(0, 30)} entities: ${entities?.length} agents: ${cfg?.agents?.list?.length}`,
+  );
+
   if (!entities?.length || !text || !cfg?.agents?.list?.length) {
     return null;
   }
@@ -484,6 +488,7 @@ export function resolveAgentMention(
   for (const ent of entities) {
     if (ent.type === "mention") {
       const mentionText = text.slice(ent.offset, ent.offset + ent.length);
+      logDebug(`[resolveAgentMention] found mention: ${mentionText}`);
       mentions.push(mentionText);
     }
   }
