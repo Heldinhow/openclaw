@@ -1,44 +1,52 @@
 # 🦞 OpenClaw — Multi-Agent Orchestration Platform
 
-> A powerful platform for building, orchestrating, and managing autonomous AI agent workflows.
-
-## Overview
-
-OpenClaw is an AI assistant platform that excels at **multi-agent orchestration**. While it provides a complete assistant framework with multi-channel support (WhatsApp, Telegram, Slack, Discord, etc.), its core strength lies in spawning, coordinating, and managing multiple sub-agents that work together to accomplish complex tasks.
-
-This fork emphasizes **sub-agent orchestration** as a first-class feature, enabling advanced patterns like parallel execution, task chaining, and distributed agent workflows.
+> A fork of [openclaw/openclaw](https://github.com/openclaw/openclaw) focused on agent and multi-agent orchestration — intelligent coordination of specialized agent teams for complex tasks.
 
 ---
 
-## Multi-Agent Team
+## What is this fork?
 
-This fork implements a **specialized agent team** that works together to handle complex requests:
+OpenClaw is a personal AI assistant platform that runs on any device and responds through the channels you already use (WhatsApp, Telegram, Slack, Discord, etc.). This fork extends the upstream base with multi-agent orchestration as a first-class feature, introducing a specialized agent team, parallel execution with dependency control, and context sharing between sub-agents.
 
-| Agent | Role | Capabilities |
-|-------|------|--------------|
-| `@commander` | Coordinator | General coordination, final decisions, delegates to other agents |
-| `@planner` | Planner | Scheduling, timelines, roadmaps, estimates, prioritization |
-| `@engineer` | Engineer | Code, implementation, debugging, architecture, technical tasks |
-| `@strategist` | Strategist | Analysis, research, strategy, planning, evaluation |
-| `@creator` | Creator | Design, visuals, content, mockups, branding |
-
-### How It Works
-
-The **Commander** is the entry point. It analyzes incoming requests and either:
-- Handles it directly for general queries
-- **Delegates** to the appropriate specialized agent via `@mention`
-
-Example:
-- "Make a website" → Commander delegates to Planner → Engineer → Creator
-- "When is the meeting?" → Commander handles directly or delegates to Planner
+The execution model is built around the **Gateway** — a long-running daemon that serves as the control plane over WebSocket (`ws://127.0.0.1:18789`). The Gateway receives tasks from channels, creates jobs, spawns agent runs in separate processes, streams progress back to clients, and persists results in memory.
 
 ---
 
-## Core Features
+## Agent Team Architecture
 
-### 🔀 Parallel Spawn
+This fork implements a specialized agent team with hierarchical delegation:
 
-Execute multiple sub-agents concurrently with configurable wait strategies:
+| Agent | Role | Responsibilities |
+|-------------|-----------|----------------------------------------------------------|
+| `@commander` | Coordinator | Entry point, context analysis, delegation, final decisions |
+| `@planner` | Planner | Schedules, roadmaps, estimates, prioritization |
+| `@engineer` | Engineer | Code, implementation, debugging, architecture |
+| `@strategist` | Strategist | Analysis, research, evaluation of alternatives |
+| `@creator` | Creator | Design, content, mockups, branding |
+
+### Delegation Flow
+
+The Commander is the entry point for every request. It autonomously decides whether to handle it directly or orchestrate other agents:
+
+```
+User → @commander → analyzes context
+  ├─ simple task → handles directly
+  └─ complex task → delegates
+      ├─ @planner (planning)
+      ├─ @engineer (implementation)
+      ├─ @strategist (analysis)
+      └─ @creator (creation)
+```
+
+Example: "Build a web app MVP" → Commander delegates sequentially to Planner → Engineer → Creator, passing context at each step.
+
+---
+
+## Orchestration Primitives
+
+### 🔀 Parallel Execution with `parallel_spawn`
+
+Runs multiple sub-agents concurrently with configurable wait strategies:
 
 ```typescript
 parallel_spawn({
@@ -51,9 +59,16 @@ parallel_spawn({
 })
 ```
 
+| Strategy | Behavior |
+|----------|------------------------------------------|
+| `"all"` | Waits for all agents to complete |
+| `"any"` | Returns as soon as any agent finishes |
+| `"race"` | Returns the first result, cancels the rest |
+| `number` | Waits for N agents to complete |
+
 ### ⛓️ Task Chaining
 
-Define execution order with dependencies — task B waits for task A to complete:
+Defines execution order with explicit dependencies — an agent only starts after its predecessor completes:
 
 ```typescript
 parallel_spawn({
@@ -67,25 +82,25 @@ parallel_spawn({
 
 ### 📦 Context Sharing
 
-Share state between sub-agents for collaborative workflows:
+Allows sub-agents to collaborate by passing state between each other:
 
 ```typescript
 parallel_spawn({
   tasks: [
-    { task: "Generate code", label: "generate", contextSharing: "summary" },
+    { task: "Generate code", label: "gen", contextSharing: "summary" },
     { task: "Review code", label: "review", contextSharing: "full", sharedKey: "project" }
   ]
 })
 ```
 
-### 🛡️ Error Handling
+### 🛡️ Failure Control
 
-Control flow when dependencies fail:
+Controls flow when dependencies fail without blocking the entire pipeline:
 
 ```typescript
 parallel_spawn({
   tasks: [...],
-  skipOnDependencyError: true  // Skip dependent tasks if dependency fails
+  skipOnDependencyError: true  // Skips dependent tasks if a dependency fails
 })
 ```
 
@@ -94,7 +109,7 @@ parallel_spawn({
 ## Available Tools
 
 | Tool | Description |
-|------|-------------|
+|------------------|---------------------------------------------------------|
 | `parallel_spawn` | Runs multiple sub-agents in parallel with wait strategies |
 | `sessions_spawn` | Spawns a single sub-agent with advanced options |
 | `sessions_send` | Sends a message directly to another agent |
@@ -170,7 +185,7 @@ curl -X POST "http://localhost:18789/tools/invoke" \
 ├── workspaces/           # Agent workspaces
 ├── AGENTS.md             # Agent documentation and conventions
 ├── SPEC.md               # Technical specification
-└── VISION.md             # Fork vision and roadmap
+└── VISION.md            # Fork vision and roadmap
 ```
 
 ---
