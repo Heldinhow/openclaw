@@ -10,14 +10,27 @@ This fork emphasizes **sub-agent orchestration** as a first-class feature, enabl
 
 ---
 
-## Why Multi-Agent Orchestration?
+## Multi-Agent Team
 
-Single agents are powerful, but complex tasks often benefit from:
+This fork implements a **specialized agent team** that works together to handle complex requests:
 
-- **Parallel execution** — Run independent tasks simultaneously
-- **Specialization** — Different agents for different subtasks
-- **Sequential workflows** — Chain dependencies where output feeds input
-- **State sharing** — Agents collaborate through shared context
+| Agent | Role | Capabilities |
+|-------|------|--------------|
+| `@commander` | Coordinator | General coordination, final decisions, delegates to other agents |
+| `@planner` | Planner | Scheduling, timelines, roadmaps, estimates, prioritization |
+| `@engineer` | Engineer | Code, implementation, debugging, architecture, technical tasks |
+| `@strategist` | Strategist | Analysis, research, strategy, planning, evaluation |
+| `@creator` | Creator | Design, visuals, content, mockups, branding |
+
+### How It Works
+
+The **Commander** is the entry point. It analyzes incoming requests and either:
+- Handles it directly for general queries
+- **Delegates** to the appropriate specialized agent via `@mention`
+
+Example:
+- "Make a website" → Commander delegates to Planner → Engineer → Creator
+- "When is the meeting?" → Commander handles directly or delegates to Planner
 
 ---
 
@@ -124,6 +137,7 @@ curl -X POST "http://localhost:18789/tools/invoke" \
 |------|-------------|
 | `parallel_spawn` | Execute multiple sub-agents in parallel with wait strategies |
 | `sessions_spawn` | Spawn a single sub-agent with advanced options |
+| `sessions_send` | Message another agent directly |
 | `sessions_list` | List active sessions |
 | `sessions_history` | Fetch session history |
 | `subagents` | Manage sub-agents (list, cancel, steer) |
