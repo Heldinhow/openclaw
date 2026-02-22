@@ -154,6 +154,10 @@ export type AgentDefaultsConfig = {
    * Include elapsed time in message envelopes ("on" | "off", default: "on").
    */
   envelopeElapsed?: "on" | "off";
+  /**
+   * Include sender prefix in direct message envelopes ("on" | "off", default: "off").
+   */
+  envelopeSenderPrefix?: "on" | "off";
   /** Optional context window cap (used for runtime estimates + status %). */
   contextTokens?: number;
   /** Optional CLI backends for text-only fallback (claude-cli, etc.). */

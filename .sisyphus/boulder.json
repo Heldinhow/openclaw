@@ -1,7 +1,7 @@
 {
   "active_plan": "/Users/helder/openclaw/.sisyphus/plans/agent-delegation.md",
   "started_at": "2026-02-21T20:20:57.808Z",
-  "session_ids": ["ses_37eb56a7dffexNIaMJtMVzehNT"],
+  "session_ids": ["ses_37eb56a7dffexNIaMJtMVzehNT", "ses_37d0dc8f4ffeS90HM0PDApa4XW"],
   "plan_name": "agent-delegation",
   "agent": "atlas"
 }

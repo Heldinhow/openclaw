@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "profiles": {
+    "opencode:default": {
+      "type": "api_key",
+      "provider": "opencode",
+      "key": "sk-DacstF49Va5FWtp0y9L5oMNxoB0cvNN53zufEe8eNMXhrDz0iJoh0OCBmNQRWO18"
+    },
+    "minimax-portal:default": {
+      "type": "oauth",
+      "provider": "minimax-portal",
+      "access": "sk-cp-wo9mFBDJJ86kfPpSWZlWpaduYJQcGtUfKptlzOMb1C8pwTAbBxCSduN0zGulVBjslgaSYpp2_itcKfAjlQAJjY5Ou__pFc0Wq7StG9jE0BDRhlASNmF6jGs",
+      "refresh": "yS3ALzDxUtlTV1In-F00CnUWRmg9pSTD1z43uV4omxw=",
+      "expires": 1803262296617
+    }
+  },
+  "lastGood": {
+    "opencode": "opencode:default"
+  },
+  "usageStats": {
+    "opencode:default": {
+      "lastUsed": 1771726964536,
+      "errorCount": 0,
+      "lastFailureAt": 1771726964532
+    }
+  }
+}

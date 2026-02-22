@@ -37,6 +37,10 @@ export type EnvelopeFormatOptions = {
    * Optional user timezone used when timezone="user".
    */
   userTimezone?: string;
+  /**
+   * Include sender prefix in direct message envelopes (default: false).
+   */
+  includeSenderPrefix?: boolean;
 };
 
 type NormalizedEnvelopeOptions = {
@@ -44,6 +48,7 @@ type NormalizedEnvelopeOptions = {
   includeTimestamp: boolean;
   includeElapsed: boolean;
   userTimezone?: string;
+  includeSenderPrefix: boolean;
 };
 
 type ResolvedEnvelopeTimezone =
@@ -69,17 +74,20 @@ export function resolveEnvelopeFormatOptions(cfg?: OpenClawConfig): EnvelopeForm
     includeTimestamp: defaults?.envelopeTimestamp !== "off",
     includeElapsed: defaults?.envelopeElapsed !== "off",
     userTimezone: defaults?.userTimezone,
+    includeSenderPrefix: defaults?.envelopeSenderPrefix === "on",
   };
 }
 
 function normalizeEnvelopeOptions(options?: EnvelopeFormatOptions): NormalizedEnvelopeOptions {
   const includeTimestamp = options?.includeTimestamp !== false;
   const includeElapsed = options?.includeElapsed !== false;
+  const includeSenderPrefix = options?.includeSenderPrefix === true;
   return {
     timezone: options?.timezone?.trim() || "local",
     includeTimestamp,
     includeElapsed,
     userTimezone: options?.userTimezone,
+    includeSenderPrefix,
   };
 }
 
@@ -202,7 +210,9 @@ export function formatInboundEnvelope(params: {
   const isDirect = !chatType || chatType === "direct";
   const resolvedSenderRaw = params.senderLabel?.trim() || resolveSenderLabel(params.sender ?? {});
   const resolvedSender = resolvedSenderRaw ? sanitizeEnvelopeHeaderPart(resolvedSenderRaw) : "";
-  const body = !isDirect && resolvedSender ? `${resolvedSender}: ${params.body}` : params.body;
+  const normalizedOptions = normalizeEnvelopeOptions(params.envelope);
+  const showSenderPrefix = (!isDirect || normalizedOptions.includeSenderPrefix) && resolvedSender;
+  const body = showSenderPrefix ? `${resolvedSender}: ${params.body}` : params.body;
   return formatAgentEnvelope({
     channel: params.channel,
     from: params.from,
